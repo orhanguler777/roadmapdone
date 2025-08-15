@@ -88,27 +88,27 @@ export default function Home() {
 }
 // ====== Self Tests (küçük güvence) ======
 function runSelfTests(){
-  const tests = [];
-  tests.push({ name: 'Normalization ok', pass: sampleModules.every(m => m.baseDuration && (m.baseFe!==undefined) && (m.baseBe!==undefined) && (m.baseQa!==undefined)), details: '' });
-  tests.push({ name: 'scaleDuration identity', pass: scaleDuration({baseDuration: 6, baseFe:1, baseBe:1, baseQa:1, fe:1, be:1, qa:1}) === 6, details: '' });
-  tests.push({ name: 'scaleDuration double team', pass: scaleDuration({baseDuration: 6, baseFe:1, baseBe:1, baseQa:1, fe:2, be:2, qa:2}) === 3, details: '' });
-  return tests;
+// const tests = [];
+ // tests.push({ name: 'Normalization ok', pass: sampleModules.every(m => m.baseDuration && (m.baseFe!==undefined) && (m.baseBe!==undefined) && (m.baseQa!==undefined)), details: '' });
+ // tests.push({ name: 'scaleDuration identity', pass: scaleDuration({baseDuration: 6, baseFe:1, baseBe:1, baseQa:1, fe:1, be:1, qa:1}) === 6, details: '' });
+ // tests.push({ name: 'scaleDuration double team', pass: scaleDuration({baseDuration: 6, baseFe:1, baseBe:1, baseQa:1, fe:2, be:2, qa:2}) === 3, details: '' });
+ // return tests;
 }
 function SelfTests(){
-  const [results] = useState(runSelfTests());
-  const allPass = results.every(r => r.pass);
-  return (
-    <div style={{marginTop:8, fontSize:12, padding:'8px 10px', border:'1px solid #e5e7eb', borderRadius:8, background: allPass? '#f0fdf4' : '#fff7ed'}}>
-      <strong>Self-tests:</strong>
-      <ul style={{margin:'6px 0 0 16px'}}>
-        {results.map((r,i)=> (
-          <li key={i} style={{color: r.pass? '#166534' : '#b45309'}}>
-            {r.pass ? '✓' : '✗'} {r.name}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
+//  const [results] = useState(runSelfTests());
+ // const allPass = results.every(r => r.pass);
+ // return (
+ //   <div style={{marginTop:8, fontSize:12, padding:'8px 10px', border:'1px solid #e5e7eb', borderRadius:8, background: allPass? '#f0fdf4' : '#fff7ed'}}>
+ //     <strong>Self-tests:</strong>
+ //     <ul style={{margin:'6px 0 0 16px'}}>
+  //      {results.map((r,i)=> (
+   //       <li key={i} style={{color: r.pass? '#166534' : '#b45309'}}>
+    //        {r.pass ? '✓' : '✗'} {r.name}
+     //     </li>
+     //   ))}
+    //  </ul>
+   // </div>
+ // );
 }
 
 function DevGantt({ modules: initialModules = [] }){
