@@ -10,7 +10,7 @@ import React, { useMemo, useRef, useState, useEffect } from "react";
  * - Left gutter column + clamp; oklar source center -> target top-center
  */
 
-const SCRIPT_URL = "https://script.google.com/macros/s/DEPLOYMENT_ID/exec"; // <= değiştir
+const SCRIPT_URL = "https://script.google.com/a/macros/pixupplay.com/s/AKfycbxu1tXwa9-X7WZqp_ge27J8bJRC-TlOzGDMvhUWECo3WC-qeNeE8wKhtRUMy68fka1X/exec"; // <= değiştir
 
 // ====== Seed ======
 const seedFromEstimates = [
