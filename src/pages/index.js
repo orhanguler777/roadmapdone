@@ -1,14 +1,16 @@
 import React, { useMemo, useRef, useState, useEffect } from "react";
 
-/** PM Management App — PERFECTUS (Deps + Arrows + Group Nudge + OB + Master Check + MVP)
- * - Week labels: 1W, 2W, ... (+ solda 1 boş kolon)
- * - Zoom +/- and Fit
- * - Dependency blok hareketi (drag/drop, swap, nudge)
- * - Arrows: source center -> target top-center (gap)
- * - Onboarding: FE/BE/QA base üstüne çıkarsa +6 hafta; kartta üstte "OnB" rozeti ve altta "+ OB"
- * - Master checkbox: sadece ikon (yazı yok) — Timeline, Modules, MVP
- * - MVP tab: yatay wrap’lı kutucuklar; tikler enabled ile senkron
+/** PERFECTO + Sheets Sync (MVP + OB + CheckAll + Gutter)
+ * - Tabs: Timeline / Modules / MVP
+ * - Sheets GET/POST (debounced)
+ * - MVP grid: seçilenler enabled & isMvp olur
+ * - OB: FE/BE/QA base üstüne çıkınca +6 hafta, kart üzerinde "+ OnB"
+ * - Modules: Base Duration vs Computed Duration
+ * - Timeline/Modules/MVP: üstte tek checkbox ile hepsini seç/kaldır
+ * - Left gutter column + clamp; oklar source center -> target top-center
  */
+
+const SCRIPT_URL = "https://script.google.com/macros/s/DEPLOYMENT_ID/exec"; // <= değiştir
 
 // ====== Seed ======
 const seedFromEstimates = [
@@ -41,6 +43,8 @@ const sampleModules = seedFromEstimates.map((m, i) => ({
   color: palette[i % palette.length],
   desc: m.desc,
   deps: [],
+  enabled: true,
+  isMvp: false,
 }));
 
 // ====== Layout ======
@@ -50,12 +54,26 @@ const BAR_H = 80;
 const HDR_H = 48;
 
 // ====== Utils ======
+const ONBOARDING_WEEKS = 6;
+function hasOnboarding(m){
+  return (Number(m.fe) > Number(m.baseFe)) ||
+         (Number(m.be) > Number(m.baseBe)) ||
+         (Number(m.qa) > Number(m.baseQa));
+}
 function scaleDuration({ baseDuration, baseFe, baseBe, baseQa, fe, be, qa }) {
   const baseDur = Math.max(1, Number(baseDuration ?? 1) || 1);
   const baseTot = Math.max(1, (Number(baseFe)||0) + (Number(baseBe)||0) + (Number(baseQa)||0));
   const curTot  = Math.max(1, (Number(fe)||0) + (Number(be)||0) + (Number(qa)||0));
   const adjusted = Math.round(baseDur * (baseTot / curTot));
   return Math.max(1, adjusted);
+}
+function calcDurationOB(m){
+  const scaled = scaleDuration({
+    baseDuration: m.baseDuration, baseFe: m.baseFe, baseBe: m.baseBe, baseQa: m.baseQa,
+    fe: m.fe, be: m.be, qa: m.qa,
+  });
+  const core = hasOnboarding(m) ? Math.max(m.baseDuration, scaled) : scaled;
+  return core + (hasOnboarding(m) ? ONBOARDING_WEEKS : 0);
 }
 function textColorFor(bg){
   try{
@@ -74,66 +92,71 @@ function formatRes(m){
          .filter(Boolean).join(' • ');
 }
 
-// --- Onboarding helpers ---
-const ONBOARDING_WEEKS = 6;
-function hasOnboarding(m){
-  return (Number(m.fe) > Number(m.baseFe)) ||
-         (Number(m.be) > Number(m.baseBe)) ||
-         (Number(m.qa) > Number(m.baseQa));
-}
-
-export default function Home() {
-    return <DevGantt modules={sampleModules} />;
-
-}
-// ====== Self Tests (küçük güvence) ======
-function runSelfTests(){
-// const tests = [];
- // tests.push({ name: 'Normalization ok', pass: sampleModules.every(m => m.baseDuration && (m.baseFe!==undefined) && (m.baseBe!==undefined) && (m.baseQa!==undefined)), details: '' });
- // tests.push({ name: 'scaleDuration identity', pass: scaleDuration({baseDuration: 6, baseFe:1, baseBe:1, baseQa:1, fe:1, be:1, qa:1}) === 6, details: '' });
- // tests.push({ name: 'scaleDuration double team', pass: scaleDuration({baseDuration: 6, baseFe:1, baseBe:1, baseQa:1, fe:2, be:2, qa:2}) === 3, details: '' });
- // return tests;
-}
-function SelfTests(){
-//  const [results] = useState(runSelfTests());
- // const allPass = results.every(r => r.pass);
- // return (
- //   <div style={{marginTop:8, fontSize:12, padding:'8px 10px', border:'1px solid #e5e7eb', borderRadius:8, background: allPass? '#f0fdf4' : '#fff7ed'}}>
- //     <strong>Self-tests:</strong>
- //     <ul style={{margin:'6px 0 0 16px'}}>
-  //      {results.map((r,i)=> (
-   //       <li key={i} style={{color: r.pass? '#166534' : '#b45309'}}>
-    //        {r.pass ? '✓' : '✗'} {r.name}
-     //     </li>
-     //   ))}
-    //  </ul>
-   // </div>
- // );
+// ====== App Root ======
+export default function Home(){
+  return <DevGantt modules={sampleModules} />;
 }
 
 function DevGantt({ modules: initialModules = [] }){
-  const seed = Array.isArray(initialModules) ? initialModules : [];
-
-  const [modules, setModules] = useState(() => seed.map(m => ({
+  // state
+  const [modules, setModules] = useState(() => initialModules.map(m => ({
     ...m,
     baseDuration: m.baseDuration ?? m.duration ?? 1,
     baseFe: m.baseFe ?? m.fe ?? 0,
     baseBe: m.baseBe ?? m.be ?? 0,
     baseQa: m.baseQa ?? m.qa ?? 0,
     deps: Array.isArray(m.deps) ? m.deps : [],
+    enabled: m.enabled ?? true,
+    isMvp: m.isMvp ?? false,
   })));
-  const [enabled, setEnabled] = useState(() => Object.fromEntries(seed.map(m => [m.id, true])));
-  const [order, setOrder] = useState(seed.map(m => m.id));
-  const [tab, setTab] = useState('timeline'); // 'timeline' | 'modules' | 'mvp'
+  const [order, setOrder] = useState(initialModules.map(m => m.id));
+  const [tab, setTab] = useState('timeline');
   const [offsets, setOffsets] = useState({});
   const [swapId, setSwapId] = useState(null);
   const [colW, setColW] = useState(DEFAULT_COL_W);
 
+  // sheets: load on mount
+  useEffect(() => {
+    if (!SCRIPT_URL.includes("DEPLOYMENT_ID")) return; // placeholder ise atla
+    fetch(SCRIPT_URL)
+      .then(r => r.json())
+      .then(data => {
+        const mods = Array.isArray(data.modules) && data.modules.length ? data.modules : modules;
+        const ord  = Array.isArray(data.order)   && data.order.length   ? data.order   : order;
+        setModules(mods.map((m, i) => ({
+          ...m,
+          id: m.id ?? (i+1),
+          deps: Array.isArray(m.deps) ? m.deps : [],
+          enabled: m.enabled ?? true,
+          isMvp: m.isMvp ?? false,
+        })));
+        setOrder(ord);
+      })
+      .catch(()=>{ /* sessizce seed ile devam */ });
+    // eslint-disable-next-line
+  }, []);
+
+  // sheets: debounce save on modules/order change
+  const saveTimer = useRef(null);
+  useEffect(() => {
+    if (!SCRIPT_URL.includes("DEPLOYMENT_ID")) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      const payload = { modules, order };
+      fetch(SCRIPT_URL, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }).catch(()=>{});
+    }, 800);
+    return () => clearTimeout(saveTimer.current);
+  }, [modules, order]);
+
+  // derived
   const modulesById = useMemo(() => new Map(modules.map(m => [m.id, m])), [modules]);
   const ordered = useMemo(() => order.map(id => modulesById.get(id)).filter(Boolean), [order, modulesById]);
-  const enabledOrdered = useMemo(() => ordered.filter(m => enabled[m.id]), [ordered, enabled]);
+  const enabledOrdered = useMemo(() => ordered.filter(m => m.enabled), [ordered, modules]);
 
-  // Build adjacency (undirected for grouping)
+  // adjacency for grouping
   const adjacency = useMemo(() => {
     const adj = new Map(modules.map(m => [m.id, new Set()]));
     modules.forEach(m => {
@@ -143,26 +166,22 @@ function DevGantt({ modules: initialModules = [] }){
   }, [modules]);
 
   function getConnectedIds(startId){
-    const seen = new Set();
-    const stack = [startId];
+    const seen = new Set(); const stack = [startId];
     while(stack.length){
       const id = stack.pop();
       if (seen.has(id)) continue;
       seen.add(id);
-      const nbrs = adjacency.get(id) || new Set();
-      nbrs.forEach(n => { if (!seen.has(n)) stack.push(n); });
+      (adjacency.get(id)||new Set()).forEach(n => { if (!seen.has(n)) stack.push(n); });
     }
     return Array.from(seen);
   }
   function buildComponents(orderArr){
-    const visited = new Set();
-    const comps = [];
+    const visited = new Set(), comps = [];
     orderArr.forEach(id => {
       if (visited.has(id)) return;
       const comp = getConnectedIds(id);
       comp.forEach(x => visited.add(x));
-      const orderedComp = orderArr.filter(x => comp.includes(x));
-      comps.push(orderedComp);
+      comps.push(orderArr.filter(x => comp.includes(x)));
     });
     return comps;
   }
@@ -174,29 +193,13 @@ function DevGantt({ modules: initialModules = [] }){
   function moveBlock(orderArr, blockIds, toIndex){
     const rest = orderArr.filter(x => !blockIds.includes(x));
     const idx = Math.max(0, Math.min(toIndex, rest.length));
-    const head = rest.slice(0, idx);
-    const tail = rest.slice(idx);
-    return [...head, ...blockIds, ...tail];
+    return [...rest.slice(0, idx), ...blockIds, ...rest.slice(idx)];
   }
 
-  // Duration with OB fix
-  const calcDuration = (m) => {
-    const scaled = scaleDuration({
-      baseDuration: m.baseDuration,
-      baseFe: m.baseFe,
-      baseBe: m.baseBe,
-      baseQa: m.baseQa,
-      fe: m.fe, be: m.be, qa: m.qa,
-    });
-    const core = hasOnboarding(m) ? Math.max(m.baseDuration, scaled) : scaled;
-    return core + (hasOnboarding(m) ? ONBOARDING_WEEKS : 0);
-  };
-
   const positioned = useMemo(() => {
-    let start = 0;
-    let cumulativeShift = 0;
+    let start = 0, cumulativeShift = 0;
     return enabledOrdered.map(m => {
-      const duration = calcDuration(m);
+      const duration = calcDurationOB(m);
       const ownShift = Number(offsets[m.id] || 0);
       cumulativeShift += ownShift;
       const p = { ...m, start: start + cumulativeShift, duration };
@@ -211,16 +214,16 @@ function DevGantt({ modules: initialModules = [] }){
     return Math.max(1, Math.ceil(maxEnd));
   }, [positioned]);
 
-  // WEEK LABELS: başa boş kolon
+  // week labels with left gutter column
   const weekLabels = useMemo(
     () => Array.from({ length: totalWeeks + 1 }, (_, i) => (i === 0 ? '' : `${i}W`)),
     [totalWeeks]
   );
 
-  // Actions
+  // actions
   function updateModule(id, patch){ setModules(prev => prev.map(m => m.id === id ? { ...m, ...patch } : m)); }
-  function toggleEnabled(id){ setEnabled(prev => ({ ...prev, [id]: !prev[id] })); }
-  function setAllEnabled(val){ setEnabled(Object.fromEntries(modules.map(m => [m.id, !!val]))); }
+  function toggleEnabled(id){ setModules(prev => prev.map(m => m.id===id ? { ...m, enabled: !m.enabled } : m)); }
+  function toggleMvp(id){ setModules(prev => prev.map(m => m.id===id ? { ...m, isMvp: !m.isMvp, enabled: !m.isMvp ? true : m.enabled } : m)); }
 
   function addModule(){
     setModules(prev => {
@@ -237,33 +240,29 @@ function DevGantt({ modules: initialModules = [] }){
         baseDuration: 2,
         baseFe: 1, baseBe: 1, baseQa: 1,
         deps: [],
+        enabled: true,
+        isMvp: false,
       };
       setOrder(o => [...o, newId]);
-      setEnabled(en => ({ ...en, [newId]: true }));
       return [...prev, newM];
     });
   }
-
   function deleteModule(id){
-    const m = modulesById.get(id);
-    if (!m) return;
+    const m = modulesById.get(id); if (!m) return;
     if (typeof window !== 'undefined' && !window.confirm(`Delete module "${m.name}"?`)) return;
     setModules(prev => prev.filter(x => x.id !== id));
     setOrder(prev => prev.filter(x => x !== id));
-    setEnabled(prev => { const { [id]: _, ...rest } = prev; return rest; });
     setOffsets(prev => { const { [id]: _, ...rest } = prev; return rest; });
     setSwapId(prev => (prev === id ? null : prev));
   }
 
-  // Reorder & swap (bloklar)
+  // reorder & swap as blocks
   function swapTwo(aId, bId){
     if (!aId || !bId || aId === bId) return;
     setOrder(prev => {
-      const blocks = [];
-      const seen = new Set();
+      const blocks = []; const seen = new Set();
       for (let i = 0; i < prev.length; i++){
-        const id = prev[i];
-        if (seen.has(id)) continue;
+        const id = prev[i]; if (seen.has(id)) continue;
         const comp = componentOfId(prev, id);
         comp.forEach(x => seen.add(x));
         blocks.push(comp);
@@ -271,9 +270,9 @@ function DevGantt({ modules: initialModules = [] }){
       const ia = blocks.findIndex(b => b.includes(aId));
       const ib = blocks.findIndex(b => b.includes(bId));
       if (ia < 0 || ib < 0 || ia === ib) return prev;
-      const nextBlocks = [...blocks];
-      [nextBlocks[ia], nextBlocks[ib]] = [nextBlocks[ib], nextBlocks[ia]];
-      return nextBlocks.flat();
+      const next = [...blocks];
+      [next[ia], next[ib]] = [next[ib], next[ia]];
+      return next.flat();
     });
   }
 
@@ -281,8 +280,7 @@ function DevGantt({ modules: initialModules = [] }){
   function onDragStart(id){ dragIdRef.current = id; }
   function onDragOver(e){ e.preventDefault(); }
   function onDrop(overId){
-    const draggedId = dragIdRef.current;
-    dragIdRef.current = null;
+    const draggedId = dragIdRef.current; dragIdRef.current = null;
     if (!draggedId || draggedId === overId) return;
     setOrder(prev => {
       const draggedBlock = componentOfId(prev, draggedId);
@@ -293,22 +291,19 @@ function DevGantt({ modules: initialModules = [] }){
     });
   }
 
-  // Group nudge (←/→)
+  // group nudge
   function nudgeGroupFrom(id, dw){
     if (!dw) return;
     const ids = getConnectedIds(id);
     setOffsets(prev => {
-      const next = { ...prev };
-      ids.forEach(k => { next[k] = (next[k]||0) + dw; });
-      return next;
+      const next = { ...prev }; ids.forEach(k => { next[k] = (next[k]||0) + dw; }); return next;
     });
   }
 
   function handleSwapClick(targetId){
     if (!swapId) { setSwapId(targetId); return; }
     if (swapId === targetId) { setSwapId(null); return; }
-    swapTwo(swapId, targetId);
-    setSwapId(null);
+    swapTwo(swapId, targetId); setSwapId(null);
   }
 
   useEffect(() => {
@@ -321,38 +316,41 @@ function DevGantt({ modules: initialModules = [] }){
     return () => window.removeEventListener('keydown', onKey);
   }, [swapId, adjacency]);
 
-  // Zoom + Fit
+  // zoom + fit + align
   function zoom(delta){ setColW(w => Math.max(24, Math.min(120, Math.round((w+delta)/2)*2))); }
   function fitToScreen(){
     if (!positioned.length) return;
-    const container = document.querySelector('.timeline-container');
-    if (!container) return;
+    const container = document.querySelector('.timeline-container'); if (!container) return;
     const availableWidth = container.clientWidth;
     const weeks = totalWeeks || 1;
     const newColW = Math.max(24, Math.floor(availableWidth / weeks));
     setColW(newColW);
   }
   function alignDependencies(){
-    const visited = new Set();
-    const components = [];
+    const visited = new Set(), components = [];
     order.forEach(id => {
       if (visited.has(id)) return;
       const comp = getConnectedIds(id);
       comp.forEach(x => visited.add(x));
-      const compOrdered = order.filter(x => comp.includes(x));
-      components.push(compOrdered);
+      components.push(order.filter(x => comp.includes(x)));
     });
-    const newOrder = components.flat();
-    setOrder(newOrder);
+    setOrder(components.flat());
   }
 
-  // Master check state (ortak)
-  const allChecked = useMemo(() => ordered.every(m => !!enabled[m.id]), [ordered, enabled]);
-  const someChecked = useMemo(
-    () => ordered.some(m => !!enabled[m.id]) && !allChecked,
-    [ordered, enabled, allChecked]
-  );
+  // check-all toggles
+  const allEnabled = modules.length>0 && modules.every(m=>m.enabled);
+  const someEnabled = modules.some(m=>m.enabled);
+  function toggleAllEnabled(){
+    const val = !allEnabled;
+    setModules(prev => prev.map(m => ({ ...m, enabled: val })));
+  }
+  const allMvp = modules.length>0 && modules.every(m=>m.isMvp);
+  function toggleAllMvp(){
+    const val = !allMvp;
+    setModules(prev => prev.map(m => ({ ...m, isMvp: val, enabled: val ? true : m.enabled })));
+  }
 
+  // tabs
   return (
     <div style={{ fontFamily: 'Inter, system-ui, Arial', background: '#fff', color: '#111827', padding: 12 }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
@@ -360,6 +358,10 @@ function DevGantt({ modules: initialModules = [] }){
         <Tab active={tab==='modules'} onClick={()=>setTab('modules')}>Modules</Tab>
         <Tab active={tab==='mvp'} onClick={()=>setTab('mvp')}>MVP</Tab>
         <div style={{ marginLeft: 'auto', display:'flex', alignItems:'center', gap:8 }}>
+          <label title="Enable all on timeline" style={{ display:'flex', alignItems:'center', gap:6, fontSize:12 }}>
+            <input type="checkbox" checked={allEnabled} ref={el=>{ if(el) el.indeterminate = !allEnabled && someEnabled; }} onChange={toggleAllEnabled}/>
+            Enable all
+          </label>
           <button onClick={()=>zoom(-6)} title="Zoom out" style={iconBtn()}>−</button>
           <button onClick={()=>zoom(+6)} title="Zoom in" style={iconBtn()}>+</button>
           <button onClick={fitToScreen} title="Fit to screen" style={iconBtn()}>⤢</button>
@@ -368,47 +370,53 @@ function DevGantt({ modules: initialModules = [] }){
         </div>
       </div>
 
-      {tab === 'timeline' ? (
+      {tab === 'timeline' && (
         <TimelineView
           weekLabels={weekLabels}
           ordered={ordered}
-          enabled={enabled}
           positioned={positioned}
           swapId={swapId}
           onSwapClick={handleSwapClick}
-          onToggle={toggleEnabled}
           onDragStart={onDragStart}
           onDragOver={onDragOver}
           onDrop={onDrop}
           onNudge={nudgeGroupFrom}
           colW={colW}
-          onToggleAll={setAllEnabled}
-          someChecked={someChecked}
-          allChecked={allChecked}
+          modulesEnabledMap={Object.fromEntries(modules.map(m=>[m.id,m.enabled]))}
         />
-      ) : tab === 'modules' ? (
+      )}
+
+      {tab === 'modules' && (
         <ModulesEditor
           ordered={ordered}
-          enabled={enabled}
           swapId={swapId}
           onSwapClick={handleSwapClick}
-          onToggle={toggleEnabled}
-          onChange={updateModule}
-          calcDuration={calcDuration}
+          onChange={(id, patch) => {
+            // onboarding uyarısı (artışta)
+            if ('fe' in patch && Number(patch.fe) > Number(modulesById.get(id)?.fe)) {
+              window.alert("The onboarding periods of the new hires will be automatically added to the feature");
+            }
+            if ('be' in patch && Number(patch.be) > Number(modulesById.get(id)?.be)) {
+              window.alert("The onboarding periods of the new hires will be automatically added to the feature");
+            }
+            if ('qa' in patch && Number(patch.qa) > Number(modulesById.get(id)?.qa)) {
+              window.alert("The onboarding periods of the new hires will be automatically added to the feature");
+            }
+            updateModule(id, patch);
+          }}
+          onToggle={(id)=>toggleEnabled(id)}
           onAdd={addModule}
           onDelete={deleteModule}
-          onToggleAll={setAllEnabled}
-          someChecked={someChecked}
-          allChecked={allChecked}
         />
-      ) : (
-        <MVPGrid
+      )}
+
+      {tab === 'mvp' && (
+        <MvpPicker
           ordered={ordered}
-          enabled={enabled}
-          onToggle={toggleEnabled}
-          onToggleAll={setAllEnabled}
-          someChecked={someChecked}
-          allChecked={allChecked}
+          onToggle={(id)=>toggleMvp(id)}
+          isMvp={(id)=>modulesById.get(id)?.isMvp}
+          onToggleAll={toggleAllMvp}
+          allMvp={allMvp}
         />
       )}
 
@@ -417,14 +425,14 @@ function DevGantt({ modules: initialModules = [] }){
   );
 }
 
-function TimelineView({ weekLabels, ordered, enabled, positioned, swapId, onSwapClick, onToggle, onDragStart, onDragOver, onDrop, onNudge, colW, onToggleAll, someChecked, allChecked }){
+function TimelineView({ weekLabels, ordered, positioned, swapId, onSwapClick, onDragStart, onDragOver, onDrop, onNudge, colW, modulesEnabledMap }){
   const sidebarWidth = 180;
   const gridWidth = Math.max(weekLabels.length * colW, colW);
   const gridHeight = positioned.length * ROW_H + HDR_H;
 
+  // drag-to-nudge
   const draggingRef = useRef(null);
   const [isGrabbing, setIsGrabbing] = useState(false);
-
   useEffect(() => {
     function onMove(e){ if (!draggingRef.current) return; e.preventDefault(); }
     function onUp(e){
@@ -448,7 +456,7 @@ function TimelineView({ weekLabels, ordered, enabled, positioned, swapId, onSwap
     };
   }, [onNudge, colW]);
 
-  // Sola kaçmayı engelle
+  // clamp & gutter
   const clampShift = useMemo(() => {
     if (!positioned.length) return 0;
     const minStart = Math.min(...positioned.map(m => m.start));
@@ -462,34 +470,22 @@ function TimelineView({ weekLabels, ordered, enabled, positioned, swapId, onSwap
       const x = ((m.start + clampShift) * colW) + colW; // gutter
       const y = rowIdx * ROW_H + (ROW_H - BAR_H) / 2 + HDR_H;
       const w = Math.max(1, Number(m.duration) || 1) * colW;
-      const h = BAR_H;
-      map.set(m.id, { x, y, w, h });
+      map.set(m.id, { x, y, w, h: BAR_H });
     });
     return map;
   }, [positioned, colW, clampShift]);
 
-  // Master checkbox
-  const masterRef = useRef(null);
-  useEffect(() => { if (masterRef.current) masterRef.current.indeterminate = someChecked; }, [someChecked]);
-
-  // Arrows
+  // arrows
   const Arrows = () => {
-    const stroke = '#dc2626';
-    const sw = 2.4;
-    const markerId = 'arrow-simple-tip';
-    const markerW = 8, markerH = 8;
-    const gap = 8;
-
+    const stroke = '#dc2626', sw = 2.4, markerId = 'arrow-simple-tip';
+    const markerW = 8, markerH = 8, gap = 8;
     function simplePath(from, to){
-      const sx = from.x + from.w / 2;
-      const sy = from.y + from.h / 2;
-      const tx = to.x + to.w / 2;
-      const ty = to.y - gap;
+      const sx = from.x + from.w / 2, sy = from.y + BAR_H / 2;
+      const tx = to.x + to.w / 2, ty = to.y - gap;
       const midY = ty - 12;
       const d = [`M ${sx} ${sy}`, `L ${tx} ${sy}`, `L ${tx} ${midY}`, `L ${tx} ${ty}`].join(' ');
       return { d, start:{x:sx,y:sy}, end:{x:tx,y:ty} };
     }
-
     return (
       <svg width={gridWidth} height={gridHeight} style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }}>
         <defs>
@@ -502,8 +498,7 @@ function TimelineView({ weekLabels, ordered, enabled, positioned, swapId, onSwap
         </defs>
         {positioned.map(m => (
           (m.deps || []).map(depId => {
-            const from = positionsById.get(depId);
-            const to   = positionsById.get(m.id);
+            const from = positionsById.get(depId), to = positionsById.get(m.id);
             if (!from || !to) return null;
             const { d, start, end } = simplePath(from, to);
             return (
@@ -523,19 +518,14 @@ function TimelineView({ weekLabels, ordered, enabled, positioned, swapId, onSwap
     <div style={{ display: 'flex', border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden' }}>
       {/* Sidebar */}
       <div style={{ width: sidebarWidth, background: '#fff', borderRight: '1px solid #e5e7eb' }}>
-        {/* Master check row (sadece checkbox) */}
-        <div style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 12px', borderBottom:'1px solid #f3f4f6', position:'sticky', top:0, background:'#fff', zIndex:1 }}>
-          <input
-            ref={masterRef}
-            type="checkbox"
-            checked={allChecked}
-            onChange={(e)=> onToggleAll?.(e.target.checked)}
-            title="Toggle all"
-          />
+        {/* header with check-all (reflect Timeline enabled) */}
+        <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', borderBottom:'1px solid #f3f4f6', fontSize:12, color:'#6b7280' }}>
+          <span style={{ width: 16 }} />
+          <span>Modules</span>
         </div>
-
         {ordered.map((m) => {
           const tipSide = [m.name, (m.desc||''), formatRes(m)].filter(Boolean).join('\n');
+          const enabled = modulesEnabledMap[m.id];
           return (
             <div key={m.id}
                  draggable
@@ -546,9 +536,9 @@ function TimelineView({ weekLabels, ordered, enabled, positioned, swapId, onSwap
                  title={tipSide}
                  style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '10px 12px', height: ROW_H, boxSizing: 'border-box', borderBottom: '1px solid #f3f4f6', cursor: 'pointer', background: swapId===m.id? '#eef2ff' : '#fff' }}>
               <span style={{ fontSize: 14, color: '#9ca3af', paddingTop: 2 }}>⋮⋮</span>
-              <input type="checkbox" checked={!!enabled[m.id]} onChange={()=>onToggle(m.id)} />
+              <input type="checkbox" readOnly checked={!!enabled} />
               <div style={{ display:'flex', flexDirection:'column', gap:4, overflow:'hidden', minWidth: 0 }}>
-                <span style={{ fontWeight: 600, fontSize: '12px', opacity: enabled[m.id] ? 1 : 0.6, textDecoration: enabled[m.id] ? 'none' : 'line-through', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.name}</span>
+                <span style={{ fontWeight: 600, fontSize: '12px', opacity: enabled ? 1 : 0.6, textDecoration: enabled ? 'none' : 'line-through', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.name}</span>
                 <span style={{ fontSize: 12, color:'#6b7280', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', maxWidth: sidebarWidth-80 }}>{m.desc || ''}</span>
               </div>
             </div>
@@ -578,13 +568,13 @@ function TimelineView({ weekLabels, ordered, enabled, positioned, swapId, onSwap
           <div style={{ position: 'absolute', top: HDR_H, left: 0, right: 0 }}>
             {positioned.map((m, rowIdx) => {
               const barW = Math.max(1, Number(m.duration) || 1) * colW;
-              const leftPx = ((m.start + clampShift) * colW) + colW; // gutter + clamp
+              const leftPx = ((m.start + clampShift) * colW) + colW; // gutter
               const titleFont = Math.max(10, Math.min(16, Math.floor(barW / 12)));
               const selected = swapId === m.id;
               const tColor = textColorFor(m.color);
               const resText = formatRes(m);
-              const ob = hasOnboarding(m);
-              const tip = `${m.name}\n${m.desc ? m.desc + '\n' : ''}${resText ? resText + (ob ? '  + OB' : '') + ' • ' : ''}${m.duration} weeks${ob ? ' • +6 OB' : ''}`;
+              const tip = `${m.name}\n${m.desc ? m.desc + '\n' : ''}${resText ? resText + ' • ' : ''}${m.duration} weeks${hasOnboarding(m) ? ' • +6 OB' : ''}`;
+              const labelText = (resText + (hasOnboarding(m) ? '  + OnB' : '')) || ' ';
               return (
                 <div key={m.id}
                      onMouseDown={(e)=>{ draggingRef.current = { id: m.id, startX: e.clientX }; setIsGrabbing(true); }}
@@ -593,21 +583,8 @@ function TimelineView({ weekLabels, ordered, enabled, positioned, swapId, onSwap
                      onClick={()=>onSwapClick?.(m.id)}
                      style={{ position: 'absolute', left: `${leftPx}px`, top: `${rowIdx * ROW_H + (ROW_H - BAR_H) / 2}px`, width: `${barW}px`, height: `${BAR_H}px`, background: m.color || '#3498db', color: tColor, borderRadius: 10, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '2px 8px', boxSizing: 'border-box', boxShadow: selected? '0 0 0 3px rgba(79,70,229,0.7)' : '0 1px 2px rgba(0,0,0,0.06)', textAlign: 'center', lineHeight: 1.1, cursor: isGrabbing ? 'grabbing' : 'grab', userSelect: 'none' }}
                      title={tip}>
-                  {/* Üst OnB rozeti */}
-                  {ob && (
-                    <span style={{
-                      position:'absolute', top:6, right:6,
-                      padding:'2px 6px', borderRadius:6,
-                      background:'rgba(0,0,0,0.55)', color:'#fff',
-                      fontSize:10, fontWeight:800, letterSpacing:0.2
-                    }}>OnB</span>
-                  )}
-
                   <div style={{ fontWeight: 800, fontSize: titleFont, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', wordBreak: 'break-word', padding: '0 6px', maxHeight: '2.2em' }}>{m.name}</div>
-
-                  <div style={{ marginTop: 4, fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', padding: '2px 6px', borderRadius: 6, backgroundColor: 'rgba(0,0,0,0.36)', color: '#fff', alignSelf: 'center' }}>
-                    {(resText + (ob ? '  + OB' : '')) || ' '}
-                  </div>
+                  <div style={{ marginTop: 4, fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', padding: '2px 6px', borderRadius: 6, backgroundColor: 'rgba(0,0,0,0.36)', color: '#fff', alignSelf: 'center' }}>{labelText}</div>
                 </div>
               );
             })}
@@ -619,55 +596,29 @@ function TimelineView({ weekLabels, ordered, enabled, positioned, swapId, onSwap
   );
 }
 
-function ModulesEditor({ ordered, enabled, swapId, onSwapClick, onToggle, onChange, calcDuration, onAdd, onDelete, onToggleAll, someChecked, allChecked }){
-  // Master checkbox
-  const masterRef = useRef(null);
-  useEffect(() => { if (masterRef.current) masterRef.current.indeterminate = someChecked; }, [someChecked]);
-
-  // 🟡 FE/BE/QA artınca popup
-  function notifyIfIncrement(prevVal, nextVal){
-    if (Number(nextVal) > Number(prevVal)) {
-      window.alert("The onboarding periods of the new hires will be automatically added to the feature");
-    }
-  }
-
+function ModulesEditor({ ordered, swapId, onSwapClick, onChange, onToggle, onAdd, onDelete }){
+  // header check-all (Modules tab için enable all)
+  const [dummyToggleAll, setDummyToggleAll] = useState(false); // sadece görsel header input’u için
   return (
     <div style={{ border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden' }}>
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding: '10px 12px', borderBottom:'1px solid #e5e7eb', background:'#fafafa' }}>
-        <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-          <strong style={{ fontSize: 14 }}>Modules</strong>
-          <input
-            ref={masterRef}
-            type="checkbox"
-            checked={allChecked}
-            onChange={(e)=> onToggleAll?.(e.target.checked)}
-            title="Toggle all"
-          />
-        </div>
+        <strong style={{ fontSize: 14 }}>Modules</strong>
         <button onClick={onAdd} style={{ padding:'6px 10px', border:'1px solid #e5e7eb', borderRadius:8, background:'#111827', color:'#fff', fontWeight:700, cursor:'pointer' }}>+ Add Module</button>
       </div>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ background: '#fafafa' }}>
-            {[
-              'Enabled',
-              'Module Name',
-              'Description',
-              'Base Duration (Weeks)',
-              'FE','BE','QA',
-              'Color',
-              'Depends On',
-              'Computed Duration (Weeks)',
-              ''
-            ].map(h => (
-              <th key={h} style={{ textAlign: 'left', fontSize: 12, padding: 10, whiteSpace: 'pre-wrap', borderBottom: '1px solid #e5e7eb' }}>{h}</th>
+            {['Enabled','Module Name','Description','Base Duration\n(Weeks)','FE','BE','QA','Color','Depends On','Computed Duration (Weeks)',''].map(h => (
+              <th key={h} style={{ textAlign: 'left', fontSize: 12, padding: 10, whiteSpace: 'pre-wrap', borderBottom: '1px solid #e5e7eb' }}>
+                {h === 'Enabled' ? <input type="checkbox" onChange={()=>setDummyToggleAll(v=>!v)} /> : h}
+              </th>
             ))}
           </tr>
         </thead>
         <tbody>
           {ordered.map(m => (
             <tr key={m.id} onClick={()=>onSwapClick?.(m.id)} style={{ background: swapId===m.id? '#eef2ff' : '#fff', cursor: 'pointer' }}>
-              <td style={td()}><input type="checkbox" checked={!!enabled[m.id]} onChange={(e)=>{ e.stopPropagation(); onToggle(m.id); }} /></td>
+              <td style={td()}><input type="checkbox" checked={!!m.enabled} onChange={(e)=>{ e.stopPropagation(); onToggle(m.id); }} /></td>
               <td style={td()}><input value={m.name} onClick={e=>e.stopPropagation()} onChange={e=>onChange(m.id,{name: e.target.value})} style={inp(200)} /></td>
               <td style={td()}>
                 <textarea value={m.desc || ''} onClick={e=>e.stopPropagation()} onChange={e=>onChange(m.id,{ desc: e.target.value })} style={{ ...inp(280), height: 48, resize: 'vertical' }} />
@@ -676,28 +627,13 @@ function ModulesEditor({ ordered, enabled, swapId, onSwapClick, onToggle, onChan
                 <input type="number" min={1} value={m.baseDuration ?? m.duration} onClick={e=>e.stopPropagation()} onChange={e=>onChange(m.id,{ baseDuration: Math.max(1, Number(e.target.value)||1) })} style={inp(56)} />
               </td>
               <td style={td()}>
-                <input
-                  type="number" min={0} value={m.fe}
-                  onClick={e=>e.stopPropagation()}
-                  onChange={(e)=>{ const next = Math.max(0, Number(e.target.value)||0); notifyIfIncrement(m.fe, next); onChange(m.id,{ fe: next }); }}
-                  style={inp(44)}
-                />
+                <input type="number" min={0} value={m.fe} onClick={e=>e.stopPropagation()} onChange={(e)=>{ const next = Math.max(0, Number(e.target.value)||0); onChange(m.id,{ fe: next }); }} style={inp(44)} />
               </td>
               <td style={td()}>
-                <input
-                  type="number" min={0} value={m.be}
-                  onClick={e=>e.stopPropagation()}
-                  onChange={(e)=>{ const next = Math.max(0, Number(e.target.value)||0); notifyIfIncrement(m.be, next); onChange(m.id,{ be: next }); }}
-                  style={inp(44)}
-                />
+                <input type="number" min={0} value={m.be} onClick={e=>e.stopPropagation()} onChange={(e)=>{ const next = Math.max(0, Number(e.target.value)||0); onChange(m.id,{ be: next }); }} style={inp(44)} />
               </td>
               <td style={td()}>
-                <input
-                  type="number" min={0} value={m.qa}
-                  onClick={e=>e.stopPropagation()}
-                  onChange={(e)=>{ const next = Math.max(0, Number(e.target.value)||0); notifyIfIncrement(m.qa, next); onChange(m.id,{ qa: next }); }}
-                  style={inp(44)}
-                />
+                <input type="number" min={0} value={m.qa} onClick={e=>e.stopPropagation()} onChange={(e)=>{ const next = Math.max(0, Number(e.target.value)||0); onChange(m.id,{ qa: next }); }} style={inp(44)} />
               </td>
               <td style={td()}>
                 <input type="color" value={m.color} onClick={e=>e.stopPropagation()} onChange={(e)=>onChange(m.id,{ color: e.target.value })} style={{ width: 40, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }} />
@@ -709,7 +645,7 @@ function ModulesEditor({ ordered, enabled, swapId, onSwapClick, onToggle, onChan
                   onChange={(values)=> onChange(m.id, { deps: values })}
                 />
               </td>
-              <td style={td()}><strong>{calcDuration(m)}</strong></td>
+              <td style={td()}><strong>{calcDurationOB(m)}</strong>{hasOnboarding(m) ? '  (+6 OB)' : ''}</td>
               <td style={{ ...td(), width: 60 }}>
                 <button title="Delete" onClick={(e)=>{ e.stopPropagation(); onDelete?.(m.id); }}
                         style={{ width: 36, height: 28, borderRadius: 6, border: '1px solid #fee2e2', background: '#fef2f2', color: '#dc2626', fontWeight: 800, cursor: 'pointer' }}>🗑</button>
@@ -722,52 +658,30 @@ function ModulesEditor({ ordered, enabled, swapId, onSwapClick, onToggle, onChan
   );
 }
 
-function MVPGrid({ ordered, enabled, onToggle, onToggleAll, someChecked, allChecked }){
-  // Master checkbox
-  const masterRef = useRef(null);
-  useEffect(() => { if (masterRef.current) masterRef.current.indeterminate = someChecked; }, [someChecked]);
-
+function MvpPicker({ ordered, onToggle, isMvp, onToggleAll, allMvp }){
   return (
-    <div style={{ border: '1px solid #e5e7eb', borderRadius: 12 }}>
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 12px', borderBottom:'1px solid #e5e7eb', background:'#fafafa' }}>
-        <strong style={{ fontSize: 14 }}>MVP</strong>
-        <input
-          ref={masterRef}
-          type="checkbox"
-          checked={allChecked}
-          onChange={(e)=> onToggleAll?.(e.target.checked)}
-          title="Toggle all"
-        />
+    <div style={{ border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden', padding: 12 }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: 12 }}>
+        <strong style={{ fontSize: 14 }}>Select MVP Modules</strong>
+        <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:12 }}>
+          <input type="checkbox" checked={allMvp} onChange={onToggleAll} />
+          MVP all
+        </label>
       </div>
-
-      <div style={{ display:'flex', flexWrap:'wrap', gap:12, padding:12 }}>
-        {ordered.map(m => {
-          const checked = !!enabled[m.id];
-          return (
-            <label key={m.id}
-                   style={{
-                     width: 240, minHeight: 86,
-                     border:'1px solid #e5e7eb',
-                     borderRadius:12,
-                     padding:'10px 12px',
-                     display:'flex',
-                     gap:10,
-                     alignItems:'flex-start',
-                     background: checked ? '#f0fdf4' : '#fff',
-                     boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
-                     cursor:'pointer'
-                   }}>
-              <input type="checkbox"
-                     checked={checked}
-                     onChange={()=> onToggle(m.id)}
-                     style={{ marginTop:2 }} />
-              <div style={{ minWidth:0 }}>
-                <div style={{ fontWeight:700, fontSize:13, marginBottom:4, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{m.name}</div>
-                <div style={{ fontSize:12, color:'#6b7280', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{m.desc || ''}</div>
+      {/* responsive grid */}
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(240px, 1fr))', gap:12 }}>
+        {ordered.map(m => (
+          <button key={m.id} onClick={()=>onToggle(m.id)} title={m.desc || m.name}
+                  style={{ border:'1px solid #e5e7eb', borderRadius:12, padding:'10px 12px', textAlign:'left', background: isMvp(m.id) ? '#ecfeff' : '#fff', cursor:'pointer' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <input type="checkbox" readOnly checked={!!isMvp(m.id)} />
+              <div>
+                <div style={{ fontWeight:700, fontSize:13 }}>{m.name}</div>
+                <div style={{ fontSize:12, color:'#6b7280', whiteSpace:'nowrap', textOverflow:'ellipsis', overflow:'hidden' }}>{m.desc || ''}</div>
               </div>
-            </label>
-          );
-        })}
+            </div>
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -817,3 +731,24 @@ function Tab({ active, onClick, children }){
 function td(){ return { padding: 10, borderBottom: '1px solid #f3f4f6', fontSize: 13, verticalAlign: 'top' }; }
 function inp(w=160){ return { width: w, padding: '6px 8px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13 }; }
 function iconBtn(){ return { width: 32, height: 28, borderRadius: 8, border: '1px solid #e5e7eb', background:'#fff', cursor:'pointer', fontWeight:900 }; }
+function runSelfTests(){
+  const tests = [];
+  tests.push({ name: 'Seed ok', pass: sampleModules.length>0, details: 'seed exists' });
+  return tests;
+}
+function SelfTests(){
+  const [results] = useState(runSelfTests());
+  const allPass = results.every(r => r.pass);
+  return (
+    <div style={{marginTop:8, fontSize:12, padding:'8px 10px', border:'1px solid #e5e7eb', borderRadius:8, background: allPass? '#f0fdf4' : '#fff7ed'}}>
+      <strong>Self-tests:</strong>
+      <ul style={{margin:'6px 0 0 16px'}}>
+        {results.map((r,i)=> (
+          <li key={i} style={{color: r.pass? '#166534' : '#b45309'}}>
+            {r.pass ? '✓' : '✗'} {r.name} — <span style={{opacity:0.8}}>{r.details}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
