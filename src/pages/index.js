@@ -1,51 +1,13 @@
+// src/pages/index.js
 import React, { useMemo, useRef, useState, useEffect } from "react";
 
-/** PERFECTO + Sheets Sync (MVP + OB + CheckAll + Gutter)
- * - Tabs: Timeline / Modules / MVP
- * - Sheets GET/POST (debounced)
- * - MVP grid: seçilenler enabled & isMvp olur
- * - OB: FE/BE/QA base üstüne çıkınca +6 hafta, kart üzerinde "+ OnB"
- * - Modules: Base Duration vs Computed Duration
- * - Timeline/Modules/MVP: üstte tek checkbox ile hepsini seç/kaldır
- * - Left gutter column + clamp; oklar source center -> target top-center
+/** PERFECT + Login (admin/viewer)
+ * - Şifreler: admin123 (tam yetki), user123 (view-only)
+ * - Rol localStorage’ta saklanır
+ * - İlk açılışta: role yoksa otomatik **viewer** başlar (view-only)
+ * - Admin: tüm aksiyonlar açık, Sheets POST autosave aktif
+ * - Viewer: tüm UI girişleri kilitli, POST autosave kapalı
  */
-
-const SCRIPT_URL = "https://script.google.com/a/macros/pixupplay.com/s/AKfycbxu1tXwa9-X7WZqp_ge27J8bJRC-TlOzGDMvhUWECo3WC-qeNeE8wKhtRUMy68fka1X/exec"; // <= değiştir
-
-// ====== Seed ======
-const seedFromEstimates = [
-  { name: 'CRM', duration: 4, fe: 1, be: 1, qa: 1, desc: 'Customer/segment, campaign management, ticketing basic flow' },
-  { name: 'GAMIFICATION', duration: 4, fe: 1, be: 1, qa: 1, desc: 'Points, badges, leaderboards, event hooks' },
-  { name: 'BONUS MANAGEMENT CASINO', duration: 5, fe: 1, be: 1, qa: 1, desc: 'Free spins, bonus wallet, rollover rules' },
-  { name: 'BASIC SPORTSBOOK', duration: 10, fe: 2, be: 3, qa: 2, desc: 'Odds feed, market/settlement, bet slip (basic)' },
-  { name: 'BASIC EXCHANGE', duration: 6, fe: 1, be: 2, qa: 1, desc: 'Wallet/currency conversion, limits' },
-  { name: 'CUSTOMIZED PLAYER FE', duration: 6, fe: 2, be: 0, qa: 1, desc: 'Personalized player-facing FE (profile, wallet)' },
-  { name: 'BASIC BONUS MANAGEMENT SPORTSBOOK', duration: 4, fe: 1, be: 1, qa: 1, desc: 'Bet bonuses, freebets, simple condition engine' },
-  { name: 'BASIC RISK CONTROL SPORTSBOOK', duration: 4, fe: 0, be: 2, qa: 1, desc: 'Limit/pattern rules, simple watchlist' },
-  { name: 'DEPLOYMENTS', duration: 2, fe: 0, be: 1, qa: 1, desc: 'CI/CD pipeline, staging to production transitions' },
-  { name: 'CREATE NEW DEV ENV', duration: 2, fe: 0, be: 1, qa: 0, desc: 'Infrastructure setup, staging environment, basic monitoring' },
-  { name: 'RGS', duration: 8, fe: 0, be: 3, qa: 2, desc: 'Remote Game Server: catalog, sessions, RTP reports' },
-  { name: 'PAYMENT INTEGRATION', duration: 3, fe: 0, be: 2, qa: 1, desc: '1–2 PSPs, deposit/withdrawal, webhooks' },
-  { name: 'CASINO AGGREGATOR INTEGRATION', duration: 4, fe: 0, be: 2, qa: 1, desc: 'Lobby integration, providers, game launch, callbacks' },
-  { name: 'SMS MODULE INTEGRATIONS', duration: 1, fe: 0, be: 1, qa: 1, desc: 'Single provider integration, OTP/notification flow' },
-  { name: 'AFFILIATE SYSTEM', duration: 5, fe: 1, be: 2, qa: 1, desc: 'Referral links, multi-tier commission, reporting' },
-  { name: 'AGENT SYSTEM', duration: 5, fe: 1, be: 2, qa: 1, desc: 'Sub-agent hierarchy, commission handling, reports' },
-];
-
-const palette = ['#e67e22','#27ae60','#8e44ad','#2c3e50','#16a085','#2980b9','#d35400','#7f8c8d','#c0392b','#9b59b6','#34495e','#f39c12'];
-const sampleModules = seedFromEstimates.map((m, i) => ({
-  id: i + 1,
-  name: m.name.toUpperCase(),
-  duration: m.duration,
-  baseDuration: m.duration,
-  fe: m.fe, be: m.be, qa: m.qa,
-  baseFe: m.fe, baseBe: m.be, baseQa: m.qa,
-  color: palette[i % palette.length],
-  desc: m.desc,
-  deps: [],
-  enabled: true,
-  isMvp: false,
-}));
 
 // ====== Layout ======
 const DEFAULT_COL_W = 40;
@@ -54,27 +16,6 @@ const BAR_H = 80;
 const HDR_H = 48;
 
 // ====== Utils ======
-const ONBOARDING_WEEKS = 6;
-function hasOnboarding(m){
-  return (Number(m.fe) > Number(m.baseFe)) ||
-         (Number(m.be) > Number(m.baseBe)) ||
-         (Number(m.qa) > Number(m.baseQa));
-}
-function scaleDuration({ baseDuration, baseFe, baseBe, baseQa, fe, be, qa }) {
-  const baseDur = Math.max(1, Number(baseDuration ?? 1) || 1);
-  const baseTot = Math.max(1, (Number(baseFe)||0) + (Number(baseBe)||0) + (Number(baseQa)||0));
-  const curTot  = Math.max(1, (Number(fe)||0) + (Number(be)||0) + (Number(qa)||0));
-  const adjusted = Math.round(baseDur * (baseTot / curTot));
-  return Math.max(1, adjusted);
-}
-function calcDurationOB(m){
-  const scaled = scaleDuration({
-    baseDuration: m.baseDuration, baseFe: m.baseFe, baseBe: m.baseBe, baseQa: m.baseQa,
-    fe: m.fe, be: m.be, qa: m.qa,
-  });
-  const core = hasOnboarding(m) ? Math.max(m.baseDuration, scaled) : scaled;
-  return core + (hasOnboarding(m) ? ONBOARDING_WEEKS : 0);
-}
 function textColorFor(bg){
   try{
     const hex = bg?.replace('#','');
@@ -91,75 +32,229 @@ function formatRes(m){
            m.qa>0 ? `${m.qa} QA` : null ]
          .filter(Boolean).join(' • ');
 }
+function randomHex(){ return "#"+Math.floor(Math.random()*0xffffff).toString(16).padStart(6,"0"); }
+function safeColor(c, fb){ if (typeof c!=="string") return fb; const ok=/^#([0-9A-F]{3}){1,2}$/i.test(c.trim()); return ok?c.trim():fb; }
 
-// ====== App Root ======
-export default function Home(){
-  return <DevGantt modules={sampleModules} />;
+// normalize: Google Sheets -> state (deps -> Number!)
+function normalizeModules(apiModules = []) {
+  return apiModules.map((m, i) => {
+    let deps = [];
+    if (typeof m.deps_json === "string") {
+      try { deps = JSON.parse(m.deps_json) || []; } catch { deps = []; }
+    } else if (Array.isArray(m.deps_json)) {
+      deps = m.deps_json;
+    }
+    deps = (Array.isArray(deps) ? deps : []).map(x => Number(x)).filter(Number.isFinite);
+
+    return {
+      id: Number(m.id ?? i + 1),
+      name: String(m.name ?? "UNTITLED").toUpperCase(),
+      desc: m.desc ?? "",
+      color: safeColor(m.color, randomHex()),
+
+      baseDuration: Number(m.baseDuration ?? m.duration ?? 1),
+      baseFe: Number(m.baseFe ?? m.fe ?? 0),
+      baseBe: Number(m.baseBe ?? m.be ?? 0),
+      baseQa: Number(m.baseQa ?? m.qa ?? 0),
+
+      fe: Number(m.fe ?? m.baseFe ?? 0),
+      be: Number(m.be ?? m.baseBe ?? 0),
+      qa: Number(m.qa ?? m.baseQa ?? 0),
+
+      deps,
+      enabled: !!m.enabled,
+      isMvp: !!m.isMvp,
+      obMode: m.obMode ?? null, // 'onb' | 'half' | null
+    };
+  });
 }
 
-function DevGantt({ modules: initialModules = [] }){
+// eski scale (ekip dağılımına göre)
+function scaleDuration({ baseDuration, baseFe, baseBe, baseQa, fe, be, qa }) {
+  const baseDur = Math.max(1, Number(baseDuration ?? 1) || 1);
+  const baseTot = Math.max(1, (Number(baseFe)||0) + (Number(baseBe)||0) + (Number(baseQa)||0));
+  const curTot  = Math.max(1, (Number(fe)||0) + (Number(be)||0) + (Number(qa)||0));
+  const adjusted = Math.round(baseDur * (baseTot / curTot));
+  return Math.max(1, adjusted);
+}
+// yeni kural: OB popup seçimine göre override; aksi halde eski scale
+function computeDuration(m){
+  const base = Math.max(1, Number(m.baseDuration)||1);
+  if (m.obMode === 'onb')  return Math.ceil(base/2) + 6;
+  if (m.obMode === 'half') return Math.max(1, Math.ceil(base/2));
+  return scaleDuration({
+    baseDuration: m.baseDuration, baseFe: m.baseFe, baseBe: m.baseBe, baseQa: m.baseQa,
+    fe: m.fe, be: m.be, qa: m.qa,
+  });
+}
+
+// ====== Loading ======
+function Loading() {
+  return (
+    <div style={{display:"grid", placeItems:"center", minHeight:"60vh", fontFamily:"Inter, system-ui, Arial"}}>
+      <div style={{display:"flex", alignItems:"center", gap:12}}>
+        <div style={{
+          width:18, height:18, border:"3px solid #e5e7eb",
+          borderTopColor:"#111827", borderRadius:"50%",
+          animation:"spin 0.8s linear infinite"
+        }}/>
+        <span style={{fontWeight:700}}>Loading…</span>
+      </div>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+    </div>
+  );
+}
+
+/* ======================= LOGIN WRAPPER ======================= */
+export default function Home(){
+  const [role, setRole] = useState(null); // 'admin' | 'viewer' | null (null => login form)
+  const [pw, setPw] = useState("");
+  const [err, setErr] = useState("");
+
+  // İlk açılışta localStorage'da rol yoksa viewer olarak başla
+  useEffect(() => {
+    const saved = typeof window !== "undefined" ? localStorage.getItem("role") : null;
+    if (saved === "admin" || saved === "viewer") {
+      setRole(saved);
+    } else {
+      setRole("viewer"); // viewer gibi login
+      localStorage.setItem("role","viewer");
+    }
+  }, []);
+
+  function handleLogin(e){
+    e?.preventDefault?.();
+    setErr("");
+    if (pw === "admin123") { setRole("admin"); localStorage.setItem("role","admin"); setPw(""); return; }
+    if (pw === "user123")  { setRole("viewer"); localStorage.setItem("role","viewer"); setPw(""); return; }
+    setErr("Wrong password");
+  }
+  function handleLogout(){
+    localStorage.removeItem("role");
+    setRole("viewer"); // logout olduğunda viewer'a düş
+    localStorage.setItem("role","viewer");
+    setPw("");
+  }
+
+  // Login formu (yalnızca role === null olduğunda gösterilecek; biz viewer başlattığımız için
+  // TopBar’daki Login butonuna basınca role=null yapıp bu formu göstereceğiz)
+  if (role === null){
+    return (
+      <div style={{minHeight:'100vh', display:'grid', placeItems:'center', fontFamily:'Inter, system-ui, Arial', background:'#f9fafb'}}>
+        <form onSubmit={handleLogin} style={{width:280, background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, padding:16, boxShadow:'0 10px 24px rgba(0,0,0,0.05)'}}>
+          <h1 style={{fontSize:18, fontWeight:800, marginBottom:10}}>Sign in</h1>
+          {/* İstendiği gibi bilgi yazısı kaldırıldı */}
+          <input
+            type="password"
+            value={pw}
+            onChange={e=>setPw(e.target.value)}
+            placeholder="Password"
+            style={{width:'100%', padding:'8px 10px', border:'1px solid #e5e7eb', borderRadius:8, fontSize:13, marginBottom:10, boxSizing:'border-box'}}
+          />
+          {err && <div style={{fontSize:12, color:'#b91c1c', marginBottom:10}}>{err}</div>}
+          <button type="submit" style={{width:'100%', padding:'9px 10px', borderRadius:8, border:'1px solid #111827', background:'#111827', color:'#fff', fontWeight:800, cursor:'pointer'}}>Login</button>
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{fontFamily:'Inter, system-ui, Arial'}}>
+      <TopBar role={role} onLogout={handleLogout} onLogin={()=>setRole(null)} />
+      <DevGantt editable={role === "admin"} />
+    </div>
+  );
+}
+
+function TopBar({ role, onLogout, onLogin }){
+  return (
+    <div style={{display:'flex', alignItems:'center', gap:10, padding:'8px 12px', borderBottom:'1px solid #e5e7eb', background:'#fff'}}>
+<div style={{ display: "flex", alignItems: "center", gap: "12px", fontWeight: 900 }}>
+  <img 
+    src="/logo.png" 
+    alt="Pixup Logo" 
+    style={{ height: "80px", width: "80px", objectFit: "contain" }} 
+  />
+  Roadmap
+</div>      <div style={{marginLeft:'auto', display:'flex', alignItems:'center', gap:8}}>
+        <span style={{
+          fontSize:12, fontWeight:800, padding:'2px 8px', borderRadius:999,
+          background: role==='admin' ? '#d1fae5' : '#e5e7eb', color:'#111827'
+        }}>
+          {role.toUpperCase()}
+        </span>
+        {role==='viewer' && <span style={{fontSize:12, color:'#6b7280'}}>View-only</span>}
+        {role==='viewer'
+          ? <button onClick={onLogin} style={{padding:'6px 10px', border:'1px solid #e5e7eb', borderRadius:8, background:'#fff', cursor:'pointer'}}>Login</button>
+          : <button onClick={onLogout} style={{padding:'6px 10px', border:'1px solid #e5e7eb', borderRadius:8, background:'#fff', cursor:'pointer'}}>Logout</button>}
+      </div>
+    </div>
+  );
+}
+
+/* ======================= APP ======================= */
+function DevGantt({ editable = true }){
   // state
-  const [modules, setModules] = useState(() => initialModules.map(m => ({
-    ...m,
-    baseDuration: m.baseDuration ?? m.duration ?? 1,
-    baseFe: m.baseFe ?? m.fe ?? 0,
-    baseBe: m.baseBe ?? m.be ?? 0,
-    baseQa: m.baseQa ?? m.qa ?? 0,
-    deps: Array.isArray(m.deps) ? m.deps : [],
-    enabled: m.enabled ?? true,
-    isMvp: m.isMvp ?? false,
-  })));
-  const [order, setOrder] = useState(initialModules.map(m => m.id));
+  const [modules, setModules] = useState(null); // null -> loading
+  const [order, setOrder] = useState([]);
   const [tab, setTab] = useState('timeline');
   const [offsets, setOffsets] = useState({});
   const [swapId, setSwapId] = useState(null);
   const [colW, setColW] = useState(DEFAULT_COL_W);
+  const [err, setErr] = useState("");
 
-  // sheets: load on mount
-  useEffect(() => {
-    if (!SCRIPT_URL.includes("DEPLOYMENT_ID")) return; // placeholder ise atla
-    fetch(SCRIPT_URL)
-      .then(r => r.json())
-      .then(data => {
-        const mods = Array.isArray(data.modules) && data.modules.length ? data.modules : modules;
-        const ord  = Array.isArray(data.order)   && data.order.length   ? data.order   : order;
-        setModules(mods.map((m, i) => ({
-          ...m,
-          id: m.id ?? (i+1),
-          deps: Array.isArray(m.deps) ? m.deps : [],
-          enabled: m.enabled ?? true,
-          isMvp: m.isMvp ?? false,
-        })));
-        setOrder(ord);
-      })
-      .catch(()=>{ /* sessizce seed ile devam */ });
-    // eslint-disable-next-line
-  }, []);
+  // anti-double-add
+  const [adding, setAdding] = useState(false);
+  const addLockRef = useRef(false);
+  const nextIdRef = useRef(1); // mount’ta gerçek maxId ile güncellenecek
 
-  // sheets: debounce save on modules/order change
+  // Sheets load
+  async function loadFromSheets() {
+    setErr("");
+    try {
+      const res = await fetch("/api/sheets", { cache: "no-store" });
+      if (!res.ok) throw new Error(`Sheets GET failed (${res.status})`);
+      const data = await res.json();
+      const norm = normalizeModules(data.modules || []);
+      setModules(norm);
+      const initialOrder = data.order?.length ? data.order : norm.map(m => m.id);
+      setOrder(initialOrder);
+      const maxId = norm.reduce((mx, m) => Math.max(mx, Number(m.id)||0), 0);
+      nextIdRef.current = Math.max(1, maxId + 1);
+    } catch (e) {
+      setErr(String(e?.message || e));
+      setModules([]);
+      setOrder([]);
+      nextIdRef.current = 1;
+    }
+  }
+  useEffect(() => { loadFromSheets(); }, []);
+
+  // autosave (viewer için POST kapalı)
   const saveTimer = useRef(null);
   useEffect(() => {
-    if (!SCRIPT_URL.includes("DEPLOYMENT_ID")) return;
+    if (modules === null) return;
+    if (!editable) return; // viewer → sheets’e yazma
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
-      const payload = { modules, order };
-      fetch(SCRIPT_URL, {
+      fetch("/api/sheets", {
         method: "POST",
-        body: JSON.stringify(payload),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ modules, order }),
       }).catch(()=>{});
     }, 800);
     return () => clearTimeout(saveTimer.current);
-  }, [modules, order]);
+  }, [modules, order, editable]);
 
   // derived
-  const modulesById = useMemo(() => new Map(modules.map(m => [m.id, m])), [modules]);
-  const ordered = useMemo(() => order.map(id => modulesById.get(id)).filter(Boolean), [order, modulesById]);
-  const enabledOrdered = useMemo(() => ordered.filter(m => m.enabled), [ordered, modules]);
+  const modulesById = useMemo(() => new Map((modules || []).map(m => [m.id, m])), [modules]);
+  const ordered = useMemo(() => (order || []).map(id => modulesById.get(id)).filter(Boolean), [order, modulesById]);
+  const enabledOrdered = useMemo(() => ordered.filter(m => m.enabled), [ordered]);
 
-  // adjacency for grouping
+  // adjacency for grouping (deps undirected for components)
   const adjacency = useMemo(() => {
-    const adj = new Map(modules.map(m => [m.id, new Set()]));
-    modules.forEach(m => {
+    const adj = new Map((modules||[]).map(m => [m.id, new Set()]));
+    (modules||[]).forEach(m => {
       (m.deps||[]).forEach(d => { if (adj.has(m.id) && adj.has(d)) { adj.get(m.id).add(d); adj.get(d).add(m.id); } });
     });
     return adj;
@@ -196,10 +291,11 @@ function DevGantt({ modules: initialModules = [] }){
     return [...rest.slice(0, idx), ...blockIds, ...rest.slice(idx)];
   }
 
+  // positions
   const positioned = useMemo(() => {
     let start = 0, cumulativeShift = 0;
     return enabledOrdered.map(m => {
-      const duration = calcDurationOB(m);
+      const duration = computeDuration(m);
       const ownShift = Number(offsets[m.id] || 0);
       cumulativeShift += ownShift;
       const p = { ...m, start: start + cumulativeShift, duration };
@@ -214,51 +310,151 @@ function DevGantt({ modules: initialModules = [] }){
     return Math.max(1, Math.ceil(maxEnd));
   }, [positioned]);
 
-  // week labels with left gutter column
   const weekLabels = useMemo(
     () => Array.from({ length: totalWeeks + 1 }, (_, i) => (i === 0 ? '' : `${i}W`)),
     [totalWeeks]
   );
 
   // actions
-  function updateModule(id, patch){ setModules(prev => prev.map(m => m.id === id ? { ...m, ...patch } : m)); }
-  function toggleEnabled(id){ setModules(prev => prev.map(m => m.id===id ? { ...m, enabled: !m.enabled } : m)); }
-  function toggleMvp(id){ setModules(prev => prev.map(m => m.id===id ? { ...m, isMvp: !m.isMvp, enabled: !m.isMvp ? true : m.enabled } : m)); }
+  function updateModule(id, patch){
+    if (!editable) return;
+    setModules(prev => (prev||[]).map(m => m.id === id ? { ...m, ...patch } : m));
+  }
 
-  function addModule(){
+  // MVP disable koruması
+  const mvpDisableWarnedRef = useRef(false);
+  function toggleEnabled(id){
+    if (!editable) return;
+    const m = modulesById.get(id);
+    if (!m) return;
+    if (m.isMvp && m.enabled) {
+      if (!mvpDisableWarnedRef.current) {
+        mvpDisableWarnedRef.current = true;
+        setTimeout(() => { mvpDisableWarnedRef.current = false; }, 0);
+        alert("These are Minimum Required Modules");
+      }
+      return;
+    }
+    updateModule(id, { enabled: !m.enabled });
+  }
+
+  function toggleMvpFlag(id){
+    if (!editable) return;
+    const m = modulesById.get(id);
+    if (!m) return;
+    if (!m.isMvp) updateModule(id, { isMvp: true, enabled: true });
+    else updateModule(id, { isMvp: false });
+  }
+
+  // FE/BE/QA change → OB popup if increased
+  function onResChange(id, role, nextValRaw){
+    if (!editable) return;
+    const nextVal = Math.max(0, Number(nextValRaw)||0);
+    const m = modulesById.get(id); if (!m) return;
+    const patch = { [role]: nextVal };
+    if (nextVal > (m[role] ?? 0)) {
+      const yes = window.confirm(
+        "Onboarding uygulanacak mı?\n\nOK = Evet (süre: ceil(base/2)+6)\nCancel = Hayır (süre: ceil(base/2))"
+      );
+      patch.obMode = yes ? 'onb' : 'half';
+    }
+    const newVals = {
+      fe: role==='fe' ? nextVal : m.fe,
+      be: role==='be' ? nextVal : m.be,
+      qa: role==='qa' ? nextVal : m.qa,
+    };
+    if (newVals.fe<=m.baseFe && newVals.be<=m.baseBe && newVals.qa<=m.baseQa) {
+      patch.obMode = null;
+    }
+    updateModule(id, patch);
+  }
+
+  // Add Module — üç kat güvenlik
+  function addModule(e){
+    if (!editable) return;
+    if (e && e.preventDefault) e.preventDefault();
+    if (e && e.stopPropagation) e.stopPropagation();
+
+    if (adding) return;
+    if (addLockRef.current) return;
+
+    setAdding(true);
+    addLockRef.current = true;
+
+    const newId = nextIdRef.current++;
+
     setModules(prev => {
-      const maxId = prev.reduce((mx, x) => Math.max(mx, x.id||0), 0);
-      const newId = maxId + 1;
-      const color = palette[(prev.length) % palette.length];
+      const list = prev || [];
+      if (list.some(x => Number(x.id) === newId)) {
+        nextIdRef.current = newId + 2;
+        return list;
+      }
       const newM = {
         id: newId,
         name: 'NEW MODULE',
-        duration: 2,
-        fe: 1, be: 1, qa: 1,
-        color,
         desc: 'Describe this module...',
+        color: randomHex(),
         baseDuration: 2,
         baseFe: 1, baseBe: 1, baseQa: 1,
+        fe: 1, be: 1, qa: 1,
         deps: [],
         enabled: true,
         isMvp: false,
+        obMode: null,
       };
-      setOrder(o => [...o, newId]);
-      return [...prev, newM];
+      return [...list, newM];
     });
-  }
-  function deleteModule(id){
-    const m = modulesById.get(id); if (!m) return;
-    if (typeof window !== 'undefined' && !window.confirm(`Delete module "${m.name}"?`)) return;
-    setModules(prev => prev.filter(x => x.id !== id));
-    setOrder(prev => prev.filter(x => x !== id));
-    setOffsets(prev => { const { [id]: _, ...rest } = prev; return rest; });
-    setSwapId(prev => (prev === id ? null : prev));
+
+    setOrder(o => {
+      const cur = o || [];
+      if (cur.includes(newId)) return cur;
+      return [...cur, newId];
+    });
+
+    setTimeout(() => {
+      addLockRef.current = false;
+      setAdding(false);
+    }, 250);
   }
 
-  // reorder & swap as blocks
-  function swapTwo(aId, bId){
-    if (!aId || !bId || aId === bId) return;
+  function deleteModule(id){
+    if (!editable) return;
+    const m = modulesById.get(id); if (!m) return;
+    if (!window.confirm(`Delete module "${m.name}"?`)) return;
+    setModules(prev => (prev||[]).filter(x => x.id !== id));
+    setOrder(prev => (prev||[]).filter(x => x !== id));
+    setOffsets(prev => { const { [id]: _, ...rest } = prev; return rest; });
+    setSwapId(s => (s === id ? null : s));
+  }
+
+  function removeFromMvp(id){
+    if (!editable) return;
+    updateModule(id, { isMvp: false });
+  }
+
+  // drag reorder (sidebar)
+  const dragIdRef = useRef(null);
+  function onDragStart(id){ if (!editable) return; dragIdRef.current = id; }
+  function onDragOver(e){ if (!editable) return; e.preventDefault(); }
+  function onDrop(overId){
+    if (!editable) return;
+    const draggedId = dragIdRef.current; dragIdRef.current = null;
+    if (!draggedId || draggedId === overId) return;
+    setOrder(prev => {
+      const p = prev || [];
+      const draggedBlock = componentOfId(p, draggedId);
+      const overBlock    = componentOfId(p, overId);
+      const rest = p.filter(x => !draggedBlock.includes(x));
+      const insertIdx = rest.indexOf(overBlock[0]);
+      return moveBlock(rest, draggedBlock, insertIdx < 0 ? rest.length : insertIdx);
+    });
+  }
+
+  // swap as blocks: select 2 bars
+  function handleSwapClick(targetId){
+    if (!editable) return;
+    if (!swapId) { setSwapId(targetId); return; }
+    if (swapId === targetId) { setSwapId(null); return; }
     setOrder(prev => {
       const blocks = []; const seen = new Set();
       for (let i = 0; i < prev.length; i++){
@@ -267,56 +463,37 @@ function DevGantt({ modules: initialModules = [] }){
         comp.forEach(x => seen.add(x));
         blocks.push(comp);
       }
-      const ia = blocks.findIndex(b => b.includes(aId));
-      const ib = blocks.findIndex(b => b.includes(bId));
+      const ia = blocks.findIndex(b => b.includes(swapId));
+      const ib = blocks.findIndex(b => b.includes(targetId));
       if (ia < 0 || ib < 0 || ia === ib) return prev;
       const next = [...blocks];
       [next[ia], next[ib]] = [next[ib], next[ia]];
       return next.flat();
     });
+    setSwapId(null);
   }
 
-  const dragIdRef = useRef(null);
-  function onDragStart(id){ dragIdRef.current = id; }
-  function onDragOver(e){ e.preventDefault(); }
-  function onDrop(overId){
-    const draggedId = dragIdRef.current; dragIdRef.current = null;
-    if (!draggedId || draggedId === overId) return;
-    setOrder(prev => {
-      const draggedBlock = componentOfId(prev, draggedId);
-      const overBlock    = componentOfId(prev, overId);
-      const rest = prev.filter(x => !draggedBlock.includes(x));
-      const insertIdx = rest.indexOf(overBlock[0]);
-      return moveBlock(rest, draggedBlock, insertIdx < 0 ? rest.length : insertIdx);
-    });
-  }
-
-  // group nudge
+  // group nudge with keyboard
   function nudgeGroupFrom(id, dw){
+    if (!editable) return;
     if (!dw) return;
     const ids = getConnectedIds(id);
     setOffsets(prev => {
-      const next = { ...prev }; ids.forEach(k => { next[k] = (next[k]||0) + dw; }); return next;
+      const next = { ...(prev||{}) }; ids.forEach(k => { next[k] = (next[k]||0) + dw; }); return next;
     });
   }
-
-  function handleSwapClick(targetId){
-    if (!swapId) { setSwapId(targetId); return; }
-    if (swapId === targetId) { setSwapId(null); return; }
-    swapTwo(swapId, targetId); setSwapId(null);
-  }
-
   useEffect(() => {
     function onKey(e){
+      if (!editable) return;
       if (!swapId) return;
       if (e.key === 'ArrowLeft'){ e.preventDefault(); nudgeGroupFrom(swapId, -1); }
       if (e.key === 'ArrowRight'){ e.preventDefault(); nudgeGroupFrom(swapId, +1); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [swapId, adjacency]);
+  }, [swapId, adjacency, editable]);
 
-  // zoom + fit + align
+  // zoom & fit
   function zoom(delta){ setColW(w => Math.max(24, Math.min(120, Math.round((w+delta)/2)*2))); }
   function fitToScreen(){
     if (!positioned.length) return;
@@ -326,46 +503,53 @@ function DevGantt({ modules: initialModules = [] }){
     const newColW = Math.max(24, Math.floor(availableWidth / weeks));
     setColW(newColW);
   }
-  function alignDependencies(){
-    const visited = new Set(), components = [];
-    order.forEach(id => {
-      if (visited.has(id)) return;
-      const comp = getConnectedIds(id);
-      comp.forEach(x => visited.add(x));
-      components.push(order.filter(x => comp.includes(x)));
-    });
-    setOrder(components.flat());
+
+  // check-all (Timeline & Modules)
+  const allEnabledTimeline = (modules||[]).every(m => m.isMvp || m.enabled);
+  function toggleAllEnabledTimeline(){
+    if (!editable) return;
+    const target = !allEnabledTimeline;
+    setModules(prev => (prev||[]).map(m => {
+      if (m.isMvp) return { ...m, enabled: true };
+      return { ...m, enabled: target };
+    }));
+  }
+  const allEnabledModules = (modules||[]).every(m => m.enabled || m.isMvp);
+  function toggleAllEnabledModules(){
+    if (!editable) return;
+    const target = !allEnabledModules;
+    setModules(prev => (prev||[]).map(m => {
+      if (m.isMvp) return { ...m, enabled: true };
+      return { ...m, enabled: target };
+    }));
   }
 
-  // check-all toggles
-  const allEnabled = modules.length>0 && modules.every(m=>m.enabled);
-  const someEnabled = modules.some(m=>m.enabled);
-  function toggleAllEnabled(){
-    const val = !allEnabled;
-    setModules(prev => prev.map(m => ({ ...m, enabled: val })));
-  }
-  const allMvp = modules.length>0 && modules.every(m=>m.isMvp);
-  function toggleAllMvp(){
-    const val = !allMvp;
-    setModules(prev => prev.map(m => ({ ...m, isMvp: val, enabled: val ? true : m.enabled })));
+  if (modules === null) return <Loading />;
+  if (err) {
+    return (
+      <div style={{padding:16}}>
+        <div style={{background:"#FEF2F2", color:"#991B1B", border:"1px solid #FEE2E2", borderRadius:8, padding:12, marginBottom:12, fontWeight:600}}>
+          Sheets error: {err}
+        </div>
+        <button onClick={loadFromSheets}
+                style={{padding:"8px 12px", border:"1px solid #e5e7eb", borderRadius:8, cursor:"pointer"}}>
+          Retry
+        </button>
+      </div>
+    );
   }
 
   // tabs
   return (
-    <div style={{ fontFamily: 'Inter, system-ui, Arial', background: '#fff', color: '#111827', padding: 12 }}>
+    <div style={{ background: '#fff', color: '#111827', padding: 12 }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
         <Tab active={tab==='timeline'} onClick={()=>setTab('timeline')}>Timeline</Tab>
         <Tab active={tab==='modules'} onClick={()=>setTab('modules')}>Modules</Tab>
-        <Tab active={tab==='mvp'} onClick={()=>setTab('mvp')}>MVP</Tab>
+        <Tab active={tab==='mvp'}      onClick={()=>setTab('mvp')}>MVP</Tab>
         <div style={{ marginLeft: 'auto', display:'flex', alignItems:'center', gap:8 }}>
-          <label title="Enable all on timeline" style={{ display:'flex', alignItems:'center', gap:6, fontSize:12 }}>
-            <input type="checkbox" checked={allEnabled} ref={el=>{ if(el) el.indeterminate = !allEnabled && someEnabled; }} onChange={toggleAllEnabled}/>
-            Enable all
-          </label>
           <button onClick={()=>zoom(-6)} title="Zoom out" style={iconBtn()}>−</button>
-          <button onClick={()=>zoom(+6)} title="Zoom in" style={iconBtn()}>+</button>
+          <button onClick={()=>zoom(+6)} title="Zoom in"  style={iconBtn()}>+</button>
           <button onClick={fitToScreen} title="Fit to screen" style={iconBtn()}>⤢</button>
-          <button onClick={alignDependencies} title="Align dependencies" style={iconBtn()}>⤳</button>
           <div style={{ fontWeight: 800, marginLeft: 8 }}>Total: {totalWeeks} weeks</div>
         </div>
       </div>
@@ -382,7 +566,11 @@ function DevGantt({ modules: initialModules = [] }){
           onDrop={onDrop}
           onNudge={nudgeGroupFrom}
           colW={colW}
-          modulesEnabledMap={Object.fromEntries(modules.map(m=>[m.id,m.enabled]))}
+          modulesEnabledMap={Object.fromEntries((modules||[]).map(m=>[m.id,m.enabled]))}
+          onToggleEnabled={toggleEnabled}
+          allEnabled={allEnabledTimeline}
+          onToggleAll={toggleAllEnabledTimeline}
+          editable={editable}
         />
       )}
 
@@ -391,46 +579,42 @@ function DevGantt({ modules: initialModules = [] }){
           ordered={ordered}
           swapId={swapId}
           onSwapClick={handleSwapClick}
-          onChange={(id, patch) => {
-            // onboarding uyarısı (artışta)
-            if ('fe' in patch && Number(patch.fe) > Number(modulesById.get(id)?.fe)) {
-              window.alert("The onboarding periods of the new hires will be automatically added to the feature");
-            }
-            if ('be' in patch && Number(patch.be) > Number(modulesById.get(id)?.be)) {
-              window.alert("The onboarding periods of the new hires will be automatically added to the feature");
-            }
-            if ('qa' in patch && Number(patch.qa) > Number(modulesById.get(id)?.qa)) {
-              window.alert("The onboarding periods of the new hires will be automatically added to the feature");
-            }
-            updateModule(id, patch);
-          }}
-          onToggle={(id)=>toggleEnabled(id)}
+          onChangeText={(id, patch)=>updateModule(id, patch)}
+          onChangeNumber={(id, key, val)=>updateModule(id, { [key]: val })}
+          onResChange={onResChange}
+          onToggleEnabled={toggleEnabled}
+          onToggleIsMvp={toggleMvpFlag}
           onAdd={addModule}
           onDelete={deleteModule}
+          adding={adding}
+          allEnabled={allEnabledModules}
+          onToggleAll={toggleAllEnabledModules}
+          editable={editable}
         />
       )}
 
       {tab === 'mvp' && (
         <MvpPicker
-          ordered={ordered}
-          onToggle={(id)=>toggleMvp(id)}
-          isMvp={(id)=>modulesById.get(id)?.isMvp}
-          onToggleAll={toggleAllMvp}
-          allMvp={allMvp}
+          ordered={ordered.filter(m=>m.isMvp)}
+          onRemoveMvp={removeFromMvp}
+          editable={editable}
         />
       )}
-
-      <SelfTests />
     </div>
   );
 }
 
-function TimelineView({ weekLabels, ordered, positioned, swapId, onSwapClick, onDragStart, onDragOver, onDrop, onNudge, colW, modulesEnabledMap }){
-  const sidebarWidth = 180;
+/* ======================= TIMELINE ======================= */
+function TimelineView({
+  weekLabels, ordered, positioned, swapId, onSwapClick,
+  onDragStart, onDragOver, onDrop, onNudge, colW,
+  modulesEnabledMap, onToggleEnabled, allEnabled, onToggleAll, editable
+}){
+  const sidebarWidth = 220;
   const gridWidth = Math.max(weekLabels.length * colW, colW);
   const gridHeight = positioned.length * ROW_H + HDR_H;
 
-  // drag-to-nudge
+  // drag-to-nudge on bars
   const draggingRef = useRef(null);
   const [isGrabbing, setIsGrabbing] = useState(false);
   useEffect(() => {
@@ -442,7 +626,7 @@ function TimelineView({ weekLabels, ordered, positioned, swapId, onSwapClick, on
       const dx = clientX - startX;
       const dw = Math.round(dx / colW);
       draggingRef.current = null; setIsGrabbing(false);
-      if (dw) onNudge?.(id, dw);
+      if (dw && editable) onNudge?.(id, dw);
     }
     window.addEventListener('mousemove', onMove, { passive:false });
     window.addEventListener('mouseup', onUp, { passive:false });
@@ -454,7 +638,7 @@ function TimelineView({ weekLabels, ordered, positioned, swapId, onSwapClick, on
       window.removeEventListener('touchmove', onMove);
       window.removeEventListener('touchend', onUp);
     };
-  }, [onNudge, colW]);
+  }, [onNudge, colW, editable]);
 
   // clamp & gutter
   const clampShift = useMemo(() => {
@@ -492,7 +676,7 @@ function TimelineView({ weekLabels, ordered, positioned, swapId, onSwapClick, on
           <marker id={markerId} viewBox="0 0 10 10" refX="6.5" refY="5" markerWidth={markerW} markerHeight={markerH} orient="auto">
             <path d="M 0 0 L 10 5 L 0 10 z" fill={stroke} />
           </marker>
-          <filter id="arrowGlow2" x="-10%" y="-10%" width="120%" height="120%">
+          <filter id="arrowGlow2" x="-10%" y="-10%" width="120%">
             <feDropShadow dx="0" dy="0" stdDeviation="0.8" floodColor="#ffffff" floodOpacity="0.85"/>
           </filter>
         </defs>
@@ -518,27 +702,32 @@ function TimelineView({ weekLabels, ordered, positioned, swapId, onSwapClick, on
     <div style={{ display: 'flex', border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden' }}>
       {/* Sidebar */}
       <div style={{ width: sidebarWidth, background: '#fff', borderRight: '1px solid #e5e7eb' }}>
-        {/* header with check-all (reflect Timeline enabled) */}
+        {/* header with ALL */}
         <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', borderBottom:'1px solid #f3f4f6', fontSize:12, color:'#6b7280' }}>
-          <span style={{ width: 16 }} />
-          <span>Modules</span>
+          <input type="checkbox" checked={allEnabled} onChange={editable ? onToggleAll : ()=>{}} disabled={!editable} />
+          <span>All</span>
         </div>
         {ordered.map((m) => {
           const tipSide = [m.name, (m.desc||''), formatRes(m)].filter(Boolean).join('\n');
           const enabled = modulesEnabledMap[m.id];
           return (
             <div key={m.id}
-                 draggable
-                 onDragStart={()=>onDragStart(m.id)}
+                 draggable={editable}
+                 onDragStart={()=>editable && onDragStart(m.id)}
                  onDragOver={onDragOver}
-                 onDrop={()=>onDrop(m.id)}
-                 onClick={()=>onSwapClick?.(m.id)}
+                 onDrop={()=>editable && onDrop(m.id)}
                  title={tipSide}
-                 style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '10px 12px', height: ROW_H, boxSizing: 'border-box', borderBottom: '1px solid #f3f4f6', cursor: 'pointer', background: swapId===m.id? '#eef2ff' : '#fff' }}>
-              <span style={{ fontSize: 14, color: '#9ca3af', paddingTop: 2 }}>⋮⋮</span>
-              <input type="checkbox" readOnly checked={!!enabled} />
-              <div style={{ display:'flex', flexDirection:'column', gap:4, overflow:'hidden', minWidth: 0 }}>
-                <span style={{ fontWeight: 600, fontSize: '12px', opacity: enabled ? 1 : 0.6, textDecoration: enabled ? 'none' : 'line-through', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{m.name}</span>
+                 style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '10px 12px', height: ROW_H, boxSizing: 'border-box', borderBottom: '1px solid #f3f4f6', background: '#fff' }}>
+              <span style={{ fontSize: 14, color: '#9ca3af', paddingTop: 2, cursor: editable ? 'grab':'default' }}>⋮⋮</span>
+              <input
+                type="checkbox"
+                checked={!!(m.isMvp || enabled)}
+                onChange={()=>editable && onToggleEnabled(m.id)}
+                disabled={!editable}
+                title={m.isMvp ? "MVP modules are always enabled" : ""}
+              />
+              <div onClick={()=>editable && onSwapClick(m.id)} style={{ display:'flex', flexDirection:'column', gap:4, overflow:'hidden', minWidth: 0, cursor: editable ? 'pointer':'default', background: (swapId===m.id? '#eef2ff':'transparent'), borderRadius:6, padding:'2px 4px' }}>
+                <span style={{ fontWeight: 600, fontSize: '12px' }}>{m.name}</span>
                 <span style={{ fontSize: 12, color:'#6b7280', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', maxWidth: sidebarWidth-80 }}>{m.desc || ''}</span>
               </div>
             </div>
@@ -573,16 +762,49 @@ function TimelineView({ weekLabels, ordered, positioned, swapId, onSwapClick, on
               const selected = swapId === m.id;
               const tColor = textColorFor(m.color);
               const resText = formatRes(m);
-              const tip = `${m.name}\n${m.desc ? m.desc + '\n' : ''}${resText ? resText + ' • ' : ''}${m.duration} weeks${hasOnboarding(m) ? ' • +6 OB' : ''}`;
-              const labelText = (resText + (hasOnboarding(m) ? '  + OnB' : '')) || ' ';
+              const tip = `${m.name}\n${m.desc ? m.desc + '\n' : ''}${resText ? resText + ' • ' : ''}${m.duration} weeks${m.obMode==='onb' ? ' • OnB' : (m.obMode==='half' ? ' • Half' : '')}`;
+              const labelText = (resText || ' ') + (m.obMode==='onb' ? '  OnB' : '');
               return (
                 <div key={m.id}
-                     onMouseDown={(e)=>{ draggingRef.current = { id: m.id, startX: e.clientX }; setIsGrabbing(true); }}
-                     onTouchStart={(e)=>{ const t=e.touches[0]; draggingRef.current = { id: m.id, startX: t.clientX }; setIsGrabbing(true); }}
+                     onMouseDown={(e)=>{ if(!editable) return; draggingRef.current = { id: m.id, startX: e.clientX }; setIsGrabbing(true); }}
+                     onTouchStart={(e)=>{ if(!editable) return; const t=e.touches[0]; draggingRef.current = { id: m.id, startX: t.clientX }; setIsGrabbing(true); }}
                      onMouseUp={()=> setIsGrabbing(false)}
-                     onClick={()=>onSwapClick?.(m.id)}
-                     style={{ position: 'absolute', left: `${leftPx}px`, top: `${rowIdx * ROW_H + (ROW_H - BAR_H) / 2}px`, width: `${barW}px`, height: `${BAR_H}px`, background: m.color || '#3498db', color: tColor, borderRadius: 10, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '2px 8px', boxSizing: 'border-box', boxShadow: selected? '0 0 0 3px rgba(79,70,229,0.7)' : '0 1px 2px rgba(0,0,0,0.06)', textAlign: 'center', lineHeight: 1.1, cursor: isGrabbing ? 'grabbing' : 'grab', userSelect: 'none' }}
+                     onClick={()=>editable && onSwapClick(m.id)}
+                     style={{
+                       position: 'absolute',
+                       left: `${leftPx}px`,
+                       top: `${rowIdx * ROW_H + (ROW_H - BAR_H) / 2}px`,
+                       width: `${barW}px`,
+                       height: `${BAR_H}px`,
+                       background: m.color || '#3498db',
+                       color: tColor,
+                       borderRadius: 10,
+                       display: 'flex',
+                       flexDirection: 'column',
+                       alignItems: 'center',
+                       justifyContent: 'center',
+                       padding: '2px 8px',
+                       boxSizing: 'border-box',
+                       boxShadow: selected? '0 0 0 3px rgba(79,70,229,0.7)' : '0 1px 2px rgba(0,0,0,0.06)',
+                       textAlign: 'center',
+                       lineHeight: 1.1,
+                       cursor: editable ? (isGrabbing ? 'grabbing' : 'grab') : 'default',
+                       userSelect: 'none'
+                     }}
                      title={tip}>
+                  {/* MVP star (sol üst, siyah) */}
+                  {m.isMvp && (
+                    <div style={{position:'absolute', left:6, top:6, fontSize:14, color:'#000'}}>★</div>
+                  )}
+                  {/* OnB badge (sağ üst) */}
+                  {m.obMode==='onb' && (
+                    <div style={{
+                      position:'absolute', right:6, top:6,
+                      fontSize:11, fontWeight:800,
+                      padding:'2px 6px', borderRadius:6,
+                      background:'rgba(0,0,0,0.36)', color:'#fff'
+                    }}>OnB</div>
+                  )}
                   <div style={{ fontWeight: 800, fontSize: titleFont, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', wordBreak: 'break-word', padding: '0 6px', maxHeight: '2.2em' }}>{m.name}</div>
                   <div style={{ marginTop: 4, fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', padding: '2px 6px', borderRadius: 6, backgroundColor: 'rgba(0,0,0,0.36)', color: '#fff', alignSelf: 'center' }}>{labelText}</div>
                 </div>
@@ -596,59 +818,95 @@ function TimelineView({ weekLabels, ordered, positioned, swapId, onSwapClick, on
   );
 }
 
-function ModulesEditor({ ordered, swapId, onSwapClick, onChange, onToggle, onAdd, onDelete }){
-  // header check-all (Modules tab için enable all)
-  const [dummyToggleAll, setDummyToggleAll] = useState(false); // sadece görsel header input’u için
+/* ======================= MODULES ======================= */
+function ModulesEditor({
+  ordered, swapId, onSwapClick,
+  onChangeText, onChangeNumber, onResChange,
+  onToggleEnabled, onToggleIsMvp,
+  onAdd, onDelete, adding, allEnabled, onToggleAll,
+  editable
+}){
   return (
     <div style={{ border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden' }}>
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding: '10px 12px', borderBottom:'1px solid #e5e7eb', background:'#fafafa' }}>
-        <strong style={{ fontSize: 14 }}>Modules</strong>
-        <button onClick={onAdd} style={{ padding:'6px 10px', border:'1px solid #e5e7eb', borderRadius:8, background:'#111827', color:'#fff', fontWeight:700, cursor:'pointer' }}>+ Add Module</button>
+        <div style={{display:'flex', alignItems:'center', gap:8}}>
+          <input type="checkbox" checked={allEnabled} onChange={editable ? onToggleAll : ()=>{}} disabled={!editable} />
+          <strong style={{ fontSize: 14 }}>All</strong>
+        </div>
+        <button
+          type="button"
+          onClick={onAdd}
+          disabled={adding || !editable}
+          style={{ padding:'6px 10px',
+                   opacity: (adding || !editable) ? 0.6 : 1,
+                   border:'1px solid #e5e7eb', borderRadius:8,
+                   background:'#111827', color:'#fff', fontWeight:700, cursor: (adding || !editable) ? 'not-allowed' : 'pointer' }}>
+          {adding ? 'Adding…' : '+ Add Module'}
+        </button>
       </div>
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ background: '#fafafa' }}>
-            {['Enabled','Module Name','Description','Base Duration\n(Weeks)','FE','BE','QA','Color','Depends On','Computed Duration (Weeks)',''].map(h => (
-              <th key={h} style={{ textAlign: 'left', fontSize: 12, padding: 10, whiteSpace: 'pre-wrap', borderBottom: '1px solid #e5e7eb' }}>
-                {h === 'Enabled' ? <input type="checkbox" onChange={()=>setDummyToggleAll(v=>!v)} /> : h}
-              </th>
+            {['Enabled','is MVP','Module Name','Description','Base Duration\n(Weeks)','FE','BE','QA','Color','Depends On','Computed Duration (Weeks)','Swap',''].map(h => (
+              <th key={h} style={{ textAlign: 'left', fontSize: 12, padding: 10, whiteSpace: 'pre-wrap', borderBottom: '1px solid #e5e7eb' }}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {ordered.map(m => (
-            <tr key={m.id} onClick={()=>onSwapClick?.(m.id)} style={{ background: swapId===m.id? '#eef2ff' : '#fff', cursor: 'pointer' }}>
-              <td style={td()}><input type="checkbox" checked={!!m.enabled} onChange={(e)=>{ e.stopPropagation(); onToggle(m.id); }} /></td>
-              <td style={td()}><input value={m.name} onClick={e=>e.stopPropagation()} onChange={e=>onChange(m.id,{name: e.target.value})} style={inp(200)} /></td>
+            <tr key={m.id} style={{ background: swapId===m.id? '#eef2ff' : '#fff' }}>
               <td style={td()}>
-                <textarea value={m.desc || ''} onClick={e=>e.stopPropagation()} onChange={e=>onChange(m.id,{ desc: e.target.value })} style={{ ...inp(280), height: 48, resize: 'vertical' }} />
+                <input type="checkbox"
+                  checked={!!m.enabled}
+                  onChange={()=>editable && onToggleEnabled(m.id)}
+                  disabled={!editable}
+                  title={m.isMvp ? "MVP modules are always enabled" : ""}
+                />
               </td>
               <td style={td()}>
-                <input type="number" min={1} value={m.baseDuration ?? m.duration} onClick={e=>e.stopPropagation()} onChange={e=>onChange(m.id,{ baseDuration: Math.max(1, Number(e.target.value)||1) })} style={inp(56)} />
+                <input type="checkbox"
+                  checked={!!m.isMvp}
+                  onChange={()=>editable && onToggleIsMvp(m.id)}
+                  disabled={!editable}
+                />
               </td>
               <td style={td()}>
-                <input type="number" min={0} value={m.fe} onClick={e=>e.stopPropagation()} onChange={(e)=>{ const next = Math.max(0, Number(e.target.value)||0); onChange(m.id,{ fe: next }); }} style={inp(44)} />
+                <input value={m.name} onChange={e=>editable && onChangeText(m.id,{name: e.target.value})} disabled={!editable} style={inp(200)} />
               </td>
               <td style={td()}>
-                <input type="number" min={0} value={m.be} onClick={e=>e.stopPropagation()} onChange={(e)=>{ const next = Math.max(0, Number(e.target.value)||0); onChange(m.id,{ be: next }); }} style={inp(44)} />
+                <textarea value={m.desc || ''} onChange={e=>editable && onChangeText(m.id,{ desc: e.target.value })} disabled={!editable} style={{ ...inp(320), height: 56, resize: 'vertical' }} />
               </td>
               <td style={td()}>
-                <input type="number" min={0} value={m.qa} onClick={e=>e.stopPropagation()} onChange={(e)=>{ const next = Math.max(0, Number(e.target.value)||0); onChange(m.id,{ qa: next }); }} style={inp(44)} />
+                <input type="number" min={1} value={m.baseDuration} onChange={e=>editable && onChangeNumber(m.id,'baseDuration', Math.max(1, Number(e.target.value)||1))} disabled={!editable} style={inp(56)} />
               </td>
               <td style={td()}>
-                <input type="color" value={m.color} onClick={e=>e.stopPropagation()} onChange={(e)=>onChange(m.id,{ color: e.target.value })} style={{ width: 40, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer' }} />
+                <input type="number" min={0} value={m.fe} onChange={(e)=>editable && onResChange(m.id,'fe', e.target.value)} disabled={!editable} style={inp(44)} />
+              </td>
+              <td style={td()}>
+                <input type="number" min={0} value={m.be} onChange={(e)=>editable && onResChange(m.id,'be', e.target.value)} disabled={!editable} style={inp(44)} />
+              </td>
+              <td style={td()}>
+                <input type="number" min={0} value={m.qa} onChange={(e)=>editable && onResChange(m.id,'qa', e.target.value)} disabled={!editable} style={inp(44)} />
+              </td>
+              <td style={td()}>
+                <input type="color" value={m.color} onChange={(e)=>editable && onChangeText(m.id,{ color: e.target.value })} disabled={!editable} style={{ width: 40, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: editable ? 'pointer':'default' }} />
               </td>
               <td style={td()}>
                 <DepDropdown
-                  value={m.deps || []}
-                  options={ordered.filter(x=>x.id!==m.id).map(opt => ({ value: opt.id, label: opt.name }))}
-                  onChange={(values)=> onChange(m.id, { deps: values })}
+                  value={(m.deps||[]).map(Number)}
+                  options={ordered.filter(x=>x.id!==m.id).map(opt => ({ value: Number(opt.id), label: opt.name }))}
+                  onChange={(values)=> editable && onChangeText(m.id, { deps: values })}
+                  disabled={!editable}
                 />
               </td>
-              <td style={td()}><strong>{calcDurationOB(m)}</strong>{hasOnboarding(m) ? '  (+6 OB)' : ''}</td>
+              <td style={td()}><strong>{computeDuration(m)}</strong>{m.obMode==='onb' ? '  (OnB)' : (m.obMode==='half' ? '  (Half)' : '')}</td>
+              <td style={td()}>
+                <button type="button" onClick={()=>editable && onSwapClick(m.id)} disabled={!editable} style={{ padding:'6px 8px', border:'1px solid #e5e7eb', borderRadius:6, background: swapId===m.id? '#eef2ff':'#fff', cursor: editable ? 'pointer':'default', opacity: editable ? 1 : 0.6 }}>Pick</button>
+              </td>
               <td style={{ ...td(), width: 60 }}>
-                <button title="Delete" onClick={(e)=>{ e.stopPropagation(); onDelete?.(m.id); }}
-                        style={{ width: 36, height: 28, borderRadius: 6, border: '1px solid #fee2e2', background: '#fef2f2', color: '#dc2626', fontWeight: 800, cursor: 'pointer' }}>🗑</button>
+                <button type="button" title="Delete" onClick={()=>editable && onDelete?.(m.id)}
+                        disabled={!editable}
+                        style={{ width: 36, height: 28, borderRadius: 6, border: '1px solid #fee2e2', background: '#fef2f2', color:'#dc2626', fontWeight: 800, cursor: editable ? 'pointer':'default', opacity: editable ? 1 : 0.6 }}>🗑</button>
               </td>
             </tr>
           ))}
@@ -658,97 +916,99 @@ function ModulesEditor({ ordered, swapId, onSwapClick, onChange, onToggle, onAdd
   );
 }
 
-function MvpPicker({ ordered, onToggle, isMvp, onToggleAll, allMvp }){
+/* ======================= MVP ======================= */
+function MvpPicker({ ordered, onRemoveMvp, editable }){
   return (
     <div style={{ border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden', padding: 12 }}>
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: 12 }}>
-        <strong style={{ fontSize: 14 }}>Select MVP Modules</strong>
-        <label style={{ display:'flex', alignItems:'center', gap:6, fontSize:12 }}>
-          <input type="checkbox" checked={allMvp} onChange={onToggleAll} />
-          MVP all
-        </label>
-      </div>
-      {/* responsive grid */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(240px, 1fr))', gap:12 }}>
-        {ordered.map(m => (
-          <button key={m.id} onClick={()=>onToggle(m.id)} title={m.desc || m.name}
-                  style={{ border:'1px solid #e5e7eb', borderRadius:12, padding:'10px 12px', textAlign:'left', background: isMvp(m.id) ? '#ecfeff' : '#fff', cursor:'pointer' }}>
-            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-              <input type="checkbox" readOnly checked={!!isMvp(m.id)} />
-              <div>
-                <div style={{ fontWeight:700, fontSize:13 }}>{m.name}</div>
-                <div style={{ fontSize:12, color:'#6b7280', whiteSpace:'nowrap', textOverflow:'ellipsis', overflow:'hidden' }}>{m.desc || ''}</div>
-              </div>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(260px, 1fr))', gap:12 }}>
+        {ordered.map(m => {
+          const tColor = textColorFor(m.color);
+          return (
+            <div key={m.id} title={m.desc || m.name} style={{
+              border:'1px solid #e5e7eb',
+              borderRadius:12,
+              padding:'10px 12px',
+              minHeight: 100,
+              display:'flex',
+              flexDirection:'column',
+              gap:6,
+              position:'relative',
+              background: m.color || '#fff',
+              color: tColor
+            }}>
+              <div style={{position:'absolute', left:8, top:6, fontSize:16, color:'#000'}}>★</div>
+              <button type="button" onClick={()=>editable && onRemoveMvp(m.id)} title="Remove from MVP"
+                      disabled={!editable}
+                      style={{position:'absolute', right:8, top:6, width:28, height:28, borderRadius:6, border:'1px solid #fee2e2', background:'#fef2f2', color:'#dc2626', fontWeight:800, cursor: editable ? 'pointer':'default', opacity: editable ? 1 : 0.6}}>🗑</button>
+              <div style={{ fontWeight:800, fontSize:14, paddingLeft:22 }}>{m.name}</div>
+              <div style={{ fontSize:12, opacity:0.95, whiteSpace:'pre-wrap' }}>{m.desc || ''}</div>
             </div>
-          </button>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
 }
 
-function DepDropdown({ value = [], options = [], onChange }){
+/* ======================= Small UI helpers ======================= */
+function DepDropdown({ value = [], options = [], onChange, disabled }){
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
+  const selectedSet = useMemo(() => new Set((value||[]).map(Number)), [value]);
+
   useEffect(() => {
     function onDoc(e){ if (!ref.current) return; if (!ref.current.contains(e.target)) setOpen(false); }
     document.addEventListener('click', onDoc);
     return () => document.removeEventListener('click', onDoc);
   }, []);
-  const selectedLabels = options.filter(o=>value.includes(o.value)).map(o=>o.label);
+
+  const selectedLabels = options
+    .filter(o => selectedSet.has(Number(o.value)))
+    .map(o => o.label);
   const title = selectedLabels.length ? `${selectedLabels.length} selected` : 'Select deps…';
+
+  function toggleOne(valNum){
+    const next = new Set(selectedSet);
+    if (next.has(valNum)) next.delete(valNum); else next.add(valNum);
+    onChange?.(Array.from(next));
+  }
+
   return (
-    <div ref={ref} style={{ position:'relative', width: 160 }}>
-      <button type="button" onClick={(e)=>{ e.stopPropagation(); setOpen(o=>!o); }}
-        style={{ width:'100%', padding:'6px 8px', border:'1px solid #e5e7eb', borderRadius:8, background:'#fff', textAlign:'left', fontSize:13 }}>
+    <div ref={ref} style={{ position:'relative', width: 180, opacity: disabled ? 0.6 : 1 }}>
+      <button type="button" onClick={(e)=>{ if(disabled) return; e.stopPropagation(); setOpen(o=>!o); }}
+        disabled={disabled}
+        style={{ width:'100%', padding:'6px 8px', border:'1px solid #e5e7eb', borderRadius:8, background:'#fff', textAlign:'left', fontSize:13, cursor: disabled ? 'default' : 'pointer' }}>
         {title}
       </button>
-      {open && (
-        <div style={{ position:'absolute', top:'110%', left:0, zIndex:5, width:'100%', maxHeight:160, overflow:'auto', border:'1px solid #e5e7eb', borderRadius:8, background:'#fff', boxShadow:'0 8px 20px rgba(0,0,0,0.08)' }}>
-          {options.map(opt => (
-            <label key={opt.value} style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 8px', cursor:'pointer' }}
-                   onClick={(e)=> e.stopPropagation()}>
-              <input type="checkbox" checked={value.includes(opt.value)} onChange={(e)=>{
-                const checked = e.target.checked;
-                const next = checked ? Array.from(new Set([...value, opt.value])) : value.filter(v=>v!==opt.value);
-                onChange?.(next);
-              }} />
-              <span style={{ fontSize:12 }}>{opt.label}</span>
-            </label>
-          ))}
+      {open && !disabled && (
+        <div style={{ position:'absolute', top:'110%', left:0, zIndex:5, width:'100%', maxHeight:220, overflow:'auto', border:'1px solid #e5e7eb', borderRadius:8, background:'#fff', boxShadow:'0 8px 20px rgba(0,0,0,0.08)' }}>
+          {options.map(opt => {
+            const valNum = Number(opt.value);
+            const checked = selectedSet.has(valNum);
+            return (
+              <label key={opt.value}
+                     style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 8px', cursor:'pointer' }}
+                     onClick={(e)=> e.stopPropagation()}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={()=> toggleOne(valNum)}
+                />
+                <span style={{ fontSize:12 }}>{opt.label}</span>
+              </label>
+            );
+          })}
         </div>
       )}
     </div>
   );
 }
 
-// ====== Small UI helpers ======
 function Tab({ active, onClick, children }){
   return (
-    <button onClick={onClick} style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #e5e7eb', background: active ? '#111827' : '#fff', color: active ? '#fff' : '#111827', fontWeight: 700, cursor: 'pointer' }}>{children}</button>
+    <button type="button" onClick={onClick} style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #e5e7eb', background: active ? '#111827' : '#fff', color: active ? '#fff' : '#111827', fontWeight: 700, cursor: 'pointer' }}>{children}</button>
   );
 }
 function td(){ return { padding: 10, borderBottom: '1px solid #f3f4f6', fontSize: 13, verticalAlign: 'top' }; }
 function inp(w=160){ return { width: w, padding: '6px 8px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13 }; }
 function iconBtn(){ return { width: 32, height: 28, borderRadius: 8, border: '1px solid #e5e7eb', background:'#fff', cursor:'pointer', fontWeight:900 }; }
-function runSelfTests(){
-  const tests = [];
-  tests.push({ name: 'Seed ok', pass: sampleModules.length>0, details: 'seed exists' });
-  return tests;
-}
-function SelfTests(){
-  const [results] = useState(runSelfTests());
-  const allPass = results.every(r => r.pass);
-  return (
-    <div style={{marginTop:8, fontSize:12, padding:'8px 10px', border:'1px solid #e5e7eb', borderRadius:8, background: allPass? '#f0fdf4' : '#fff7ed'}}>
-      <strong>Self-tests:</strong>
-      <ul style={{margin:'6px 0 0 16px'}}>
-        {results.map((r,i)=> (
-          <li key={i} style={{color: r.pass? '#166534' : '#b45309'}}>
-            {r.pass ? '✓' : '✗'} {r.name} — <span style={{opacity:0.8}}>{r.details}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
