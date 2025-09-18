@@ -15,7 +15,7 @@ const {
 } = process.env;
 
 function loadPrivateKey() {
-  // 1) Dosyadan oku (tercih edilen, senin kurduğun yöntem)
+  // 1) Dosyadan oku (tercih edilen)
   if (GOOGLE_SA_KEY_FILE) {
     const keyPath = path.resolve(process.cwd(), GOOGLE_SA_KEY_FILE);
     if (!fs.existsSync(keyPath)) {
@@ -31,7 +31,6 @@ function loadPrivateKey() {
 
   // 2) ENV string (tek satır, \n kaçışlı olabilir)
   if (GOOGLE_SA_KEY && GOOGLE_SA_KEY.trim().length > 0) {
-    // Çoğu zaman .env’de \n escape’li gelir; gerçek newline’a çevir:
     const fromEnv = GOOGLE_SA_KEY.replace(/\\n/g, '\n').trim();
     if (!fromEnv.includes('BEGIN PRIVATE KEY')) {
       throw new Error('GOOGLE_SA_KEY present but not a PEM string.');
@@ -51,37 +50,108 @@ async function sheetsClient() {
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
 
-  // Sürüm farkı sorunlarına girmemek için token alarak doğrula
   await jwt.getAccessToken();
-
   return google.sheets({ version: 'v4', auth: jwt });
 }
 
-// ------- Basit okuma/yazma yardımcıları (değişmedi) -------
+// === ŞEMA ===
+// Aşağıdaki kolonlar bir defa yazılınca sabit kalır.
+// id, name, desc, color, docsUrl, deps_json, enabled, isMvp,
+// v1: baseDuration_v1, baseFe_v1, baseBe_v1, baseQa_v1, basePm_v1, fe_v1, be_v1, qa_v1, pm_v1, obMode_v1, progress_v1, computedOverride_v1
+// v2: ... _v2
+// v3: ... _v3
+
+const HEADER = [
+  'id','name','desc','color','docsUrl','deps_json','enabled','isMvp',
+  // V1
+  'baseDuration_v1','baseFe_v1','baseBe_v1','baseQa_v1','basePm_v1',
+  'fe_v1','be_v1','qa_v1','pm_v1',
+  'obMode_v1','progress_v1','computedOverride_v1',
+  // V2
+  'baseDuration_v2','baseFe_v2','baseBe_v2','baseQa_v2','basePm_v2',
+  'fe_v2','be_v2','qa_v2','pm_v2',
+  'obMode_v2','progress_v2','computedOverride_v2',
+  // V3
+  'baseDuration_v3','baseFe_v3','baseBe_v3','baseQa_v3','basePm_v3',
+  'fe_v3','be_v3','qa_v3','pm_v3',
+  'obMode_v3','progress_v3','computedOverride_v3',
+];
+
+function boolOut(b){ return b ? true : false; }
+function numOut(n, def=0){ const v = Number(n); return Number.isFinite(v) ? v : def; }
+function safeJson(v){ try { return JSON.stringify(v ?? []); } catch { return '[]'; } }
+
 async function readModules(sheets) {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: `${MODS_SHEET}!A1:N`,
+    range: `${MODS_SHEET}!A1:AZ`,
     valueRenderOption: 'UNFORMATTED_VALUE',
   });
   const rows = res.data.values || [];
   if (rows.length <= 1) return [];
-  const data = rows.slice(1).filter(r => r[0] !== undefined && r[0] !== '');
+
+  const hdr = rows[0] || [];
+  const idx = Object.fromEntries(hdr.map((h, i) => [h, i]));
+
+  function get(r, key, def=''){
+    const i = idx[key];
+    if (i===undefined) return def;
+    return r[i] ?? def;
+  }
+
+  const data = rows.slice(1).filter(r => (get(r,'id','') !== ''));
+
   return data.map(r => ({
-    id: Number(r[0]),
-    name: r[1],
-    desc: r[2],
-    color: r[3],
-    baseDuration: Number(r[4] || 0),
-    baseFe: Number(r[5] || 0),
-    baseBe: Number(r[6] || 0),
-    baseQa: Number(r[7] || 0),
-    fe: Number(r[8] || 0),
-    be: Number(r[9] || 0),
-    qa: Number(r[10] || 0),
-    deps: r[11] ? JSON.parse(r[11]) : [],
-    enabled: r[12] === true || r[12] === 'true' || r[12] === 1,
-    isMvp:  r[13] === true || r[13] === 'true' || r[13] === 1,
+    id: Number(get(r,'id')),
+    name: get(r,'name',''),
+    desc: get(r,'desc',''),
+    color: get(r,'color','#999999'),
+    docsUrl: get(r,'docsUrl',''),
+    deps_json: get(r,'deps_json','[]'),
+    enabled: get(r,'enabled',false),
+    isMvp:   get(r,'isMvp',false),
+
+    // V1
+    baseDuration_v1: get(r,'baseDuration_v1',1),
+    baseFe_v1: get(r,'baseFe_v1',0),
+    baseBe_v1: get(r,'baseBe_v1',0),
+    baseQa_v1: get(r,'baseQa_v1',0),
+    basePm_v1: get(r,'basePm_v1',0),
+    fe_v1: get(r,'fe_v1',0),
+    be_v1: get(r,'be_v1',0),
+    qa_v1: get(r,'qa_v1',0),
+    pm_v1: get(r,'pm_v1',0),
+    obMode_v1: get(r,'obMode_v1','none'),
+    progress_v1: get(r,'progress_v1',0),
+    computedOverride_v1: get(r,'computedOverride_v1',0),
+
+    // V2
+    baseDuration_v2: get(r,'baseDuration_v2',1),
+    baseFe_v2: get(r,'baseFe_v2',0),
+    baseBe_v2: get(r,'baseBe_v2',0),
+    baseQa_v2: get(r,'baseQa_v2',0),
+    basePm_v2: get(r,'basePm_v2',0),
+    fe_v2: get(r,'fe_v2',0),
+    be_v2: get(r,'be_v2',0),
+    qa_v2: get(r,'qa_v2',0),
+    pm_v2: get(r,'pm_v2',0),
+    obMode_v2: get(r,'obMode_v2','none'),
+    progress_v2: get(r,'progress_v2',0),
+    computedOverride_v2: get(r,'computedOverride_v2',0),
+
+    // V3
+    baseDuration_v3: get(r,'baseDuration_v3',1),
+    baseFe_v3: get(r,'baseFe_v3',0),
+    baseBe_v3: get(r,'baseBe_v3',0),
+    baseQa_v3: get(r,'baseQa_v3',0),
+    basePm_v3: get(r,'basePm_v3',0),
+    fe_v3: get(r,'fe_v3',0),
+    be_v3: get(r,'be_v3',0),
+    qa_v3: get(r,'qa_v3',0),
+    pm_v3: get(r,'pm_v3',0),
+    obMode_v3: get(r,'obMode_v3','none'),
+    progress_v3: get(r,'progress_v3',0),
+    computedOverride_v3: get(r,'computedOverride_v3',0),
   }));
 }
 
@@ -94,6 +164,44 @@ async function readMeta(sheets, key) {
   const rows = res.data.values || [];
   for (const r of rows.slice(1)) if (r[0] === key) return r[1] || '';
   return '';
+}
+
+function moduleRowOut(m){
+  // state -> sheet row (HEADER sırasına göre)
+  const v1 = m.versions?.v1 ?? {};
+  const v2 = m.versions?.v2 ?? {};
+  const v3 = m.versions?.v3 ?? {};
+  return [
+    numOut(m.id, 0),
+    String(m.name || ''),
+    String(m.desc || ''),
+    String(m.color || '#999999'),
+    String(m.docsUrl || ''),
+    safeJson(m.deps || []),
+    boolOut(m.enabled),
+    boolOut(m.isMvp),
+
+    // V1
+    numOut(v1.baseDuration,1), numOut(v1.baseFe,0), numOut(v1.baseBe,0), numOut(v1.baseQa,0), numOut(v1.basePm,0),
+    numOut(v1.fe,0), numOut(v1.be,0), numOut(v1.qa,0), numOut(v1.pm,0),
+    String(v1.obMode || 'none'),
+    numOut(v1.progress,0),
+    numOut(v1.computedOverride,0),
+
+    // V2
+    numOut(v2.baseDuration,1), numOut(v2.baseFe,0), numOut(v2.baseBe,0), numOut(v2.baseQa,0), numOut(v2.basePm,0),
+    numOut(v2.fe,0), numOut(v2.be,0), numOut(v2.qa,0), numOut(v2.pm,0),
+    String(v2.obMode || 'none'),
+    numOut(v2.progress,0),
+    numOut(v2.computedOverride,0),
+
+    // V3
+    numOut(v3.baseDuration,1), numOut(v3.baseFe,0), numOut(v3.baseBe,0), numOut(v3.baseQa,0), numOut(v3.basePm,0),
+    numOut(v3.fe,0), numOut(v3.be,0), numOut(v3.qa,0), numOut(v3.pm,0),
+    String(v3.obMode || 'none'),
+    numOut(v3.progress,0),
+    numOut(v3.computedOverride,0),
+  ];
 }
 
 async function writeAll(sheets, { modules, order }) {
@@ -123,21 +231,12 @@ async function writeAll(sheets, { modules, order }) {
   });
 
   // modules sheet’i tamamen yenile
-  const header = [[
-    'id','name','desc','color','baseDuration','baseFe','baseBe','baseQa',
-    'fe','be','qa','deps_json','enabled','isMvp'
-  ]];
-  const values = (modules || []).map(m => ([
-    m.id, m.name, m.desc || '', m.color || '#999999',
-    Number(m.baseDuration || 0), Number(m.baseFe || 0), Number(m.baseBe || 0), Number(m.baseQa || 0),
-    Number(m.fe || 0), Number(m.be || 0), Number(m.qa || 0),
-    JSON.stringify(m.deps || []),
-    !!m.enabled, !!m.isMvp
-  ]));
+  const header = [HEADER];
+  const values = (modules || []).map(moduleRowOut);
 
   await sheets.spreadsheets.values.clear({
     spreadsheetId: SHEET_ID,
-    range: `${MODS_SHEET}!A:Z`
+    range: `${MODS_SHEET}!A:AZ`
   });
 
   await sheets.spreadsheets.values.update({
