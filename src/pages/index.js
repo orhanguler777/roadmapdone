@@ -7,6 +7,19 @@ import React, { useMemo, useRef, useState, useEffect } from "react";
  * - İlk açılışta: role yoksa otomatik **viewer** başlar (view-only)
  * - Admin: tüm aksiyonlar açık, Sheets POST autosave aktif
  * - Viewer: tüm UI girişleri kilitli, POST autosave kapalı
+ *
+ * VERSIONS:
+ * - Global selector: V1 / V2 / V3
+ * - Her modül: versions.v1/v2/v3 alanları:
+ *    { baseDuration, baseFe, baseBe, baseQa, basePm,
+ *      fe, be, qa, pm,
+ *      obMode ('none'|'half'|'onb'),
+ *      progress (0..100),
+ *      computedOverride (0 => yok; >0 => süreyi override et) }
+ * - Docs URL başlık tıklanınca açılır (barın tamamı değil)
+ * - Timeline’da her modül için progress bar; hover’da % gösterir
+ * - Haftalık başlıkların altına GENEL progress bar (ağırlıklandırılmış)
+ * - “auto: X” metni tüm computed alanlarının yanında görünür
  */
 
 // ====== Layout ======
@@ -14,8 +27,28 @@ const DEFAULT_COL_W = 40;
 const ROW_H = 80;
 const BAR_H = 80;
 const HDR_H = 48;
+// Overlap’ı bitirmek için: haftaların hemen altındaki “overall progress” bandının yüksekliği
+const OVERALL_H = 56; // 1 satır boşluk gibi davranır (progress + alt boşluk)
 
 // ====== Utils ======
+// --- Progress renk yardımcıları ---
+function hexToRgb(hex) {
+  const h = hex?.replace('#','') || '000000';
+  const m = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+  const r = parseInt(m.slice(0,2),16), g = parseInt(m.slice(2,4),16), b = parseInt(m.slice(4,6),16);
+  return { r, g, b };
+}
+function clamp01(x){ return Math.max(0, Math.min(1, x)); }
+function darkenHex(hex, amount=0.3){ // amount: 0..1
+  const {r,g,b} = hexToRgb(hex || '#000');
+  const f = 1 - clamp01(amount);
+  return `rgb(${Math.round(r*f)}, ${Math.round(g*f)}, ${Math.round(b*f)})`;
+}
+function transparentize(hex, alpha=0.25){
+  const {r,g,b} = hexToRgb(hex || '#000');
+  return `rgba(${r}, ${g}, ${b}, ${clamp01(alpha)})`;
+}
+
 function textColorFor(bg){
   try{
     const hex = bg?.replace('#','');
@@ -26,66 +59,89 @@ function textColorFor(bg){
     return yiq >= 160 ? '#111827' : '#fff';
   }catch{ return '#fff'; }
 }
-function formatRes(m){
-  return [ m.fe>0 ? `${m.fe} FE` : null,
-           m.be>0 ? `${m.be} BE` : null,
-           m.qa>0 ? `${m.qa} QA` : null ]
-         .filter(Boolean).join(' • ');
-}
+function clamp(n,min,max){ return Math.max(min, Math.min(max, n)); }
+function asNum(n, def=0){ const v = Number(n); return Number.isFinite(v) ? v : def; }
 function randomHex(){ return "#"+Math.floor(Math.random()*0xffffff).toString(16).padStart(6,"0"); }
 function safeColor(c, fb){ if (typeof c!=="string") return fb; const ok=/^#([0-9A-F]{3}){1,2}$/i.test(c.trim()); return ok?c.trim():fb; }
+function fmtResCount(mv){
+  return [
+    (mv.fe>0? `${mv.fe} FE`:null),
+    (mv.be>0? `${mv.be} BE`:null),
+    (mv.qa>0? `${mv.qa} QA`:null),
+    (mv.pm>0? `${mv.pm} PM`:null),
+  ].filter(Boolean).join(' • ');
+}
 
-// normalize: Google Sheets -> state (deps -> Number!)
+// normalize: Google Sheets -> state
 function normalizeModules(apiModules = []) {
-  return apiModules.map((m, i) => {
+  return apiModules.map((row, i) => {
+    // deps normalize
     let deps = [];
-    if (typeof m.deps_json === "string") {
-      try { deps = JSON.parse(m.deps_json) || []; } catch { deps = []; }
-    } else if (Array.isArray(m.deps_json)) {
-      deps = m.deps_json;
+    const depRaw = row.deps_json ?? row.deps ?? "[]";
+    try { deps = Array.isArray(depRaw) ? depRaw : JSON.parse(depRaw || "[]"); }
+    catch { deps = []; }
+    deps = (deps || []).map(x => Number(x)).filter(Number.isFinite);
+
+    // docsUrl farklı isimler:
+    const docsUrl = (row.docsUrl ?? row.docs_url ?? row.docUrl ?? row.link ?? "").toString().trim();
+
+    // geriye uyumluluk: v* yoksa base / fe / be / qa / pm yoksa 0
+    function vPick(suffix){
+      return {
+        baseDuration: asNum(row[`baseDuration_${suffix}`] ?? row.baseDuration ?? 1, 1),
+        baseFe: asNum(row[`baseFe_${suffix}`] ?? row.baseFe ?? 0, 0),
+        baseBe: asNum(row[`baseBe_${suffix}`] ?? row.baseBe ?? 0, 0),
+        baseQa: asNum(row[`baseQa_${suffix}`] ?? row.baseQa ?? 0, 0),
+        basePm: asNum(row[`basePm_${suffix}`] ?? row.basePm ?? 0, 0),
+
+        fe: asNum(row[`fe_${suffix}`] ?? row.fe ?? row.baseFe ?? 0, 0),
+        be: asNum(row[`be_${suffix}`] ?? row.be ?? row.baseBe ?? 0, 0),
+        qa: asNum(row[`qa_${suffix}`] ?? row.qa ?? row.baseQa ?? 0, 0),
+        pm: asNum(row[`pm_${suffix}`] ?? row.pm ?? row.basePm ?? 0, 0),
+
+        obMode: (row[`obMode_${suffix}`] ?? row.obMode ?? 'none') || 'none', // 'none'|'half'|'onb'
+        progress: clamp(asNum(row[`progress_${suffix}`] ?? row.progress ?? 0, 0), 0, 100),
+        computedOverride: Math.max(0, asNum(row[`computedOverride_${suffix}`] ?? row.computedDuration ?? 0, 0)),
+      };
     }
-    deps = (Array.isArray(deps) ? deps : []).map(x => Number(x)).filter(Number.isFinite);
 
     return {
-      id: Number(m.id ?? i + 1),
-      name: String(m.name ?? "UNTITLED").toUpperCase(),
-      desc: m.desc ?? "",
-      color: safeColor(m.color, randomHex()),
-
-      baseDuration: Number(m.baseDuration ?? m.duration ?? 1),
-      baseFe: Number(m.baseFe ?? m.fe ?? 0),
-      baseBe: Number(m.baseBe ?? m.be ?? 0),
-      baseQa: Number(m.baseQa ?? m.qa ?? 0),
-
-      fe: Number(m.fe ?? m.baseFe ?? 0),
-      be: Number(m.be ?? m.baseBe ?? 0),
-      qa: Number(m.qa ?? m.baseQa ?? 0),
-
+      id: Number(row.id ?? i+1),
+      name: String(row.name ?? "UNTITLED").toUpperCase(),
+      desc: row.desc ?? "",
+      color: safeColor(row.color, randomHex()),
+      docsUrl,
       deps,
-      enabled: !!m.enabled,
-      isMvp: !!m.isMvp,
-      obMode: m.obMode ?? null, // 'onb' | 'half' | null
+      enabled: row.enabled === true || row.enabled === 'true' || row.enabled === 1,
+      isMvp:  row.isMvp  === true || row.isMvp  === 'true' || row.isMvp  === 1,
+
+      versions: {
+        v1: vPick("v1"),
+        v2: vPick("v2"),
+        v3: vPick("v3"),
+      }
     };
   });
 }
 
-// eski scale (ekip dağılımına göre)
-function scaleDuration({ baseDuration, baseFe, baseBe, baseQa, fe, be, qa }) {
-  const baseDur = Math.max(1, Number(baseDuration ?? 1) || 1);
-  const baseTot = Math.max(1, (Number(baseFe)||0) + (Number(baseBe)||0) + (Number(baseQa)||0));
-  const curTot  = Math.max(1, (Number(fe)||0) + (Number(be)||0) + (Number(qa)||0));
+// eski scale (ekip dağılımına göre) — PM süreye dahil değil (isteğe göre açılabilir)
+function scaleDurationByTeam(mv){
+  const baseDur = Math.max(1, asNum(mv.baseDuration, 1));
+  const baseTot = Math.max(1, asNum(mv.baseFe,0) + asNum(mv.baseBe,0) + asNum(mv.baseQa,0));
+  const curTot  = Math.max(1, asNum(mv.fe,0)       + asNum(mv.be,0)       + asNum(mv.qa,0)     );
   const adjusted = Math.round(baseDur * (baseTot / curTot));
   return Math.max(1, adjusted);
 }
-// yeni kural: OB popup seçimine göre override; aksi halde eski scale
-function computeDuration(m){
-  const base = Math.max(1, Number(m.baseDuration)||1);
-  if (m.obMode === 'onb')  return Math.ceil(base/2) + 6;
-  if (m.obMode === 'half') return Math.max(1, Math.ceil(base/2));
-  return scaleDuration({
-    baseDuration: m.baseDuration, baseFe: m.baseFe, baseBe: m.baseBe, baseQa: m.baseQa,
-    fe: m.fe, be: m.be, qa: m.qa,
-  });
+function autoDuration(mv){
+  if (mv.obMode === 'onb')  return Math.ceil(Math.max(1, mv.baseDuration)/2) + 6;
+  if (mv.obMode === 'half') return Math.max(1, Math.ceil(Math.max(1, mv.baseDuration)/2));
+  return scaleDurationByTeam(mv);
+}
+function computeDurationForVersion(m, active){
+  const mv = m.versions[active];
+  if (!mv) return 1;
+  if (asNum(mv.computedOverride,0) > 0) return Math.max(1, asNum(mv.computedOverride,1));
+  return Math.max(1, asNum(autoDuration(mv),1));
 }
 
 // ====== Loading ======
@@ -111,13 +167,13 @@ export default function Home(){
   const [pw, setPw] = useState("");
   const [err, setErr] = useState("");
 
-  // İlk açılışta localStorage'da rol yoksa viewer olarak başla
+  // İlk açılışta viewer olarak başlat
   useEffect(() => {
     const saved = typeof window !== "undefined" ? localStorage.getItem("role") : null;
     if (saved === "admin" || saved === "viewer") {
       setRole(saved);
     } else {
-      setRole("viewer"); // viewer gibi login
+      setRole("viewer");
       localStorage.setItem("role","viewer");
     }
   }, []);
@@ -131,19 +187,16 @@ export default function Home(){
   }
   function handleLogout(){
     localStorage.removeItem("role");
-    setRole("viewer"); // logout olduğunda viewer'a düş
+    setRole("viewer");
     localStorage.setItem("role","viewer");
     setPw("");
   }
 
-  // Login formu (yalnızca role === null olduğunda gösterilecek; biz viewer başlattığımız için
-  // TopBar’daki Login butonuna basınca role=null yapıp bu formu göstereceğiz)
   if (role === null){
     return (
       <div style={{minHeight:'100vh', display:'grid', placeItems:'center', fontFamily:'Inter, system-ui, Arial', background:'#f9fafb'}}>
         <form onSubmit={handleLogin} style={{width:280, background:'#fff', border:'1px solid #e5e7eb', borderRadius:12, padding:16, boxShadow:'0 10px 24px rgba(0,0,0,0.05)'}}>
           <h1 style={{fontSize:18, fontWeight:800, marginBottom:10}}>Sign in</h1>
-          {/* İstendiği gibi bilgi yazısı kaldırıldı */}
           <input
             type="password"
             value={pw}
@@ -169,14 +222,11 @@ export default function Home(){
 function TopBar({ role, onLogout, onLogin }){
   return (
     <div style={{display:'flex', alignItems:'center', gap:10, padding:'8px 12px', borderBottom:'1px solid #e5e7eb', background:'#fff'}}>
-<div style={{ display: "flex", alignItems: "center", gap: "12px", fontWeight: 900 }}>
-  <img 
-    src="/logo.png" 
-    alt="Pixup Logo" 
-    style={{ height: "80px", width: "80px", objectFit: "contain" }} 
-  />
-  Roadmap
-</div>      <div style={{marginLeft:'auto', display:'flex', alignItems:'center', gap:8}}>
+      <div style={{ display: "flex", alignItems: "center", gap: "12px", fontWeight: 900 }}>
+        <img src="/logo.png" alt="Pixup Logo" style={{ height: "80px", width: "80px", objectFit: "contain" }} />
+        Roadmap
+      </div>
+      <div style={{marginLeft:'auto', display:'flex', alignItems:'center', gap:8}}>
         <span style={{
           fontSize:12, fontWeight:800, padding:'2px 8px', borderRadius:999,
           background: role==='admin' ? '#d1fae5' : '#e5e7eb', color:'#111827'
@@ -202,6 +252,7 @@ function DevGantt({ editable = true }){
   const [swapId, setSwapId] = useState(null);
   const [colW, setColW] = useState(DEFAULT_COL_W);
   const [err, setErr] = useState("");
+  const [version, setVersion] = useState('v1'); // 'v1' | 'v2' | 'v3'
 
   // anti-double-add
   const [adding, setAdding] = useState(false);
@@ -291,18 +342,18 @@ function DevGantt({ editable = true }){
     return [...rest.slice(0, idx), ...blockIds, ...rest.slice(idx)];
   }
 
-  // positions
+  // positions — version-aware
   const positioned = useMemo(() => {
     let start = 0, cumulativeShift = 0;
     return enabledOrdered.map(m => {
-      const duration = computeDuration(m);
+      const duration = computeDurationForVersion(m, version);
       const ownShift = Number(offsets[m.id] || 0);
       cumulativeShift += ownShift;
       const p = { ...m, start: start + cumulativeShift, duration };
       start += duration;
       return p;
     });
-  }, [enabledOrdered, offsets]);
+  }, [enabledOrdered, offsets, version]);
 
   const totalWeeks = useMemo(() => {
     if (!positioned.length) return 1;
@@ -315,10 +366,31 @@ function DevGantt({ editable = true }){
     [totalWeeks]
   );
 
+  // Genel ilerleme (version-aware, süre ağırlıklı)
+  const overallProgressPct = useMemo(() => {
+    const items = enabledOrdered.map(m => {
+      const d = computeDurationForVersion(m, version);
+      const pr = clamp(asNum(m.versions[version]?.progress ?? 0, 0), 0, 100);
+      return { w: d, p: pr };
+    });
+    const totalW = items.reduce((s,x)=>s+x.w, 0);
+    if (totalW <= 0) return 0;
+    const sum = items.reduce((s,x)=> s + x.w * x.p, 0);
+    return Math.round(sum / totalW);
+  }, [enabledOrdered, version]);
+
   // actions
   function updateModule(id, patch){
     if (!editable) return;
     setModules(prev => (prev||[]).map(m => m.id === id ? { ...m, ...patch } : m));
+  }
+  function updateModuleVersioned(id, vkey, patch){
+    if (!editable) return;
+    setModules(prev => (prev||[]).map(m => {
+      if (m.id !== id) return m;
+      const cur = m.versions?.[vkey] ?? {};
+      return { ...m, versions: { ...m.versions, [vkey]: { ...cur, ...patch } } };
+    }));
   }
 
   // MVP disable koruması
@@ -346,43 +418,44 @@ function DevGantt({ editable = true }){
     else updateModule(id, { isMvp: false });
   }
 
-  // FE/BE/QA change → OB popup if increased
-  function onResChange(id, role, nextValRaw){
+  // kaynak değişimi → ob popup (sadece artışta)
+  function onResChange(id, vkey, role, nextValRaw){
     if (!editable) return;
     const nextVal = Math.max(0, Number(nextValRaw)||0);
     const m = modulesById.get(id); if (!m) return;
+    const mv = m.versions[vkey] || {};
     const patch = { [role]: nextVal };
-    if (nextVal > (m[role] ?? 0)) {
-      const yes = window.confirm(
-        "Onboarding uygulanacak mı?\n\nOK = Evet (süre: ceil(base/2)+6)\nCancel = Hayır (süre: ceil(base/2))"
-      );
+    if (nextVal > (mv[role] ?? 0)) {
+      const yes = window.confirm("Onboarding uygulanacak mı?\n\nOK = Evet (süre: ceil(base/2)+6)\nCancel = Hayır (süre: ceil(base/2))");
       patch.obMode = yes ? 'onb' : 'half';
     }
     const newVals = {
-      fe: role==='fe' ? nextVal : m.fe,
-      be: role==='be' ? nextVal : m.be,
-      qa: role==='qa' ? nextVal : m.qa,
+      fe: role==='fe' ? nextVal : mv.fe,
+      be: role==='be' ? nextVal : mv.be,
+      qa: role==='qa' ? nextVal : mv.qa,
+      pm: role==='pm' ? nextVal : mv.pm,
     };
-    if (newVals.fe<=m.baseFe && newVals.be<=m.baseBe && newVals.qa<=m.baseQa) {
-      patch.obMode = null;
+    if (newVals.fe<=mv.baseFe && newVals.be<=mv.baseBe && newVals.qa<=mv.baseQa && newVals.pm<=mv.basePm) {
+      patch.obMode = 'none';
     }
-    updateModule(id, patch);
+    updateModuleVersioned(id, vkey, patch);
   }
 
-  // Add Module — üç kat güvenlik
+  // Add Module
   function addModule(e){
     if (!editable) return;
-    if (e && e.preventDefault) e.preventDefault();
-    if (e && e.stopPropagation) e.stopPropagation();
-
-    if (adding) return;
-    if (addLockRef.current) return;
-
-    setAdding(true);
-    addLockRef.current = true;
+    e?.preventDefault?.(); e?.stopPropagation?.();
+    if (adding || addLockRef.current) return;
+    setAdding(true); addLockRef.current = true;
 
     const newId = nextIdRef.current++;
-
+    const initV = {
+      baseDuration: 2, baseFe:1, baseBe:1, baseQa:1, basePm:1,
+      fe:1, be:1, qa:1, pm:1,
+      obMode:'none',
+      progress:0,
+      computedOverride:0
+    };
     setModules(prev => {
       const list = prev || [];
       if (list.some(x => Number(x.id) === newId)) {
@@ -394,27 +467,16 @@ function DevGantt({ editable = true }){
         name: 'NEW MODULE',
         desc: 'Describe this module...',
         color: randomHex(),
-        baseDuration: 2,
-        baseFe: 1, baseBe: 1, baseQa: 1,
-        fe: 1, be: 1, qa: 1,
+        docsUrl: "",
         deps: [],
         enabled: true,
         isMvp: false,
-        obMode: null,
+        versions: { v1:{...initV}, v2:{...initV}, v3:{...initV} }
       };
       return [...list, newM];
     });
-
-    setOrder(o => {
-      const cur = o || [];
-      if (cur.includes(newId)) return cur;
-      return [...cur, newId];
-    });
-
-    setTimeout(() => {
-      addLockRef.current = false;
-      setAdding(false);
-    }, 250);
+    setOrder(o => (o||[]).includes(newId) ? o : ([...(o||[]), newId]));
+    setTimeout(()=>{ addLockRef.current=false; setAdding(false); }, 250);
   }
 
   function deleteModule(id){
@@ -542,11 +604,15 @@ function DevGantt({ editable = true }){
   // tabs
   return (
     <div style={{ background: '#fff', color: '#111827', padding: 12 }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+      {/* üst satır: Tabs + Version selector + zoom + fit + total */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap:'wrap' }}>
         <Tab active={tab==='timeline'} onClick={()=>setTab('timeline')}>Timeline</Tab>
         <Tab active={tab==='modules'} onClick={()=>setTab('modules')}>Modules</Tab>
         <Tab active={tab==='mvp'}      onClick={()=>setTab('mvp')}>MVP</Tab>
-        <div style={{ marginLeft: 'auto', display:'flex', alignItems:'center', gap:8 }}>
+
+        {/* Version selector */}
+        <div style={{ marginLeft: 'auto', display:'flex', alignItems:'center', gap:12 }}>
+          <VersionSelector value={version} onChange={setVersion} />
           <button onClick={()=>zoom(-6)} title="Zoom out" style={iconBtn()}>−</button>
           <button onClick={()=>zoom(+6)} title="Zoom in"  style={iconBtn()}>+</button>
           <button onClick={fitToScreen} title="Fit to screen" style={iconBtn()}>⤢</button>
@@ -571,16 +637,19 @@ function DevGantt({ editable = true }){
           allEnabled={allEnabledTimeline}
           onToggleAll={toggleAllEnabledTimeline}
           editable={editable}
+          version={version}
+          overallProgressPct={overallProgressPct}
         />
       )}
 
       {tab === 'modules' && (
         <ModulesEditor
+          version={version}
           ordered={ordered}
           swapId={swapId}
           onSwapClick={handleSwapClick}
-          onChangeText={(id, patch)=>updateModule(id, patch)}
-          onChangeNumber={(id, key, val)=>updateModule(id, { [key]: val })}
+          onChangeRoot={(id, patch)=>updateModule(id, patch)}
+          onChangeVersion={(id, vkey, patch)=>updateModuleVersioned(id, vkey, patch)}
           onResChange={onResChange}
           onToggleEnabled={toggleEnabled}
           onToggleIsMvp={toggleMvpFlag}
@@ -604,15 +673,42 @@ function DevGantt({ editable = true }){
   );
 }
 
+/* ======================= Version selector ======================= */
+function VersionSelector({ value, onChange }){
+  const opt = [
+    {k:'v1', label:'V1'},
+    {k:'v2', label:'V2'},
+    {k:'v3', label:'V3'},
+  ];
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+      {opt.map(o => (
+        <label key={o.k} style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, cursor:'pointer' }}>
+          <input
+            type="radio"
+            name="version"
+            value={o.k}
+            checked={value===o.k}
+            onChange={()=>onChange?.(o.k)}
+          />
+          <span style={{fontWeight:800}}>{o.label}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
 /* ======================= TIMELINE ======================= */
 function TimelineView({
   weekLabels, ordered, positioned, swapId, onSwapClick,
   onDragStart, onDragOver, onDrop, onNudge, colW,
-  modulesEnabledMap, onToggleEnabled, allEnabled, onToggleAll, editable
+  modulesEnabledMap, onToggleEnabled, allEnabled, onToggleAll, editable,
+  version, overallProgressPct
 }){
   const sidebarWidth = 220;
-  const gridWidth = Math.max(weekLabels.length * colW, colW);
-  const gridHeight = positioned.length * ROW_H + HDR_H;
+  // toplam yükseklik: haftalar (HDR_H) + overall progress alanı (OVERALL_H) + satırlar
+  const gridWidth  = Math.max(weekLabels.length * colW, colW);
+  const gridHeight = positioned.length * ROW_H + HDR_H + OVERALL_H;
 
   // drag-to-nudge on bars
   const draggingRef = useRef(null);
@@ -647,12 +743,12 @@ function TimelineView({
     return minStart < 0 ? -minStart : 0;
   }, [positioned]);
 
-  // positions for arrows
+  // positions for arrows (OVERALL_H kadar aşağıdan başlar)
   const positionsById = useMemo(() => {
     const map = new Map();
     positioned.forEach((m, rowIdx) => {
       const x = ((m.start + clampShift) * colW) + colW; // gutter
-      const y = rowIdx * ROW_H + (ROW_H - BAR_H) / 2 + HDR_H;
+      const y = rowIdx * ROW_H + (ROW_H - BAR_H) / 2 + HDR_H + OVERALL_H;
       const w = Math.max(1, Number(m.duration) || 1) * colW;
       map.set(m.id, { x, y, w, h: BAR_H });
     });
@@ -698,6 +794,21 @@ function TimelineView({
     );
   };
 
+  // genel progress barı: haftaların hemen altında, sabit bant; modül kartlarının ÜSTÜNE GELMEZ
+  const GeneralProgress = () => {
+    const pct = clamp(asNum(overallProgressPct,0), 0, 100);
+    return (
+      <div style={{ position:'absolute', left:0, top: HDR_H, width: gridWidth, height: OVERALL_H, padding:'8px 12px', boxSizing:'border-box', background:'#fff', borderBottom:'1px solid #eef2f7', zIndex:1 }}>
+        <div title={`Overall progress: ${pct}%`} style={{ height: 10, background:'#f3f4f6', borderRadius:999, overflow:'hidden' }}>
+          <div style={{ width: `${pct}%`, height:'100%', background: 'linear-gradient(90deg, #93c5fd, #3b82f6, #1d4ed8)' }} />
+        </div>
+        <div style={{ marginTop:6, fontSize:11, color:'#6b7280', fontWeight:800 }}>
+          Overall progress: {pct}%
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div style={{ display: 'flex', border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden' }}>
       {/* Sidebar */}
@@ -708,7 +819,8 @@ function TimelineView({
           <span>All</span>
         </div>
         {ordered.map((m) => {
-          const tipSide = [m.name, (m.desc||''), formatRes(m)].filter(Boolean).join('\n');
+          const mv = m.versions[version];
+          const tipSide = [m.name, (m.desc||''), fmtResCount(mv)].filter(Boolean).join('\n');
           const enabled = modulesEnabledMap[m.id];
           return (
             <div key={m.id}
@@ -738,32 +850,52 @@ function TimelineView({
       {/* Canvas */}
       <div className="timeline-container" style={{ position: 'relative', flex: 1, overflow: 'auto' }}>
         <div style={{ position: 'relative', width: gridWidth, height: gridHeight, background: '#fff' }}>
-          {/* Sticky header */}
-          <div style={{ position: 'sticky', top: 0, zIndex: 2, background: '#fff', display: 'flex', borderBottom: '1px solid #eee' }}>
+          {/* Sticky header (weeks) */}
+          <div style={{ position: 'sticky', top: 0, zIndex: 3, background: '#fff', display: 'flex', borderBottom: '1px solid #eee' }}>
             {weekLabels.map((label, i) => (
               <div key={i} style={{ width: colW, textAlign: 'center', fontSize: 12, fontWeight: 700, padding: '10px 0 6px', borderRight: '1px solid #eef2f7' }}>{label}</div>
             ))}
           </div>
 
-          {/* Grid columns */}
-          <div style={{ position: 'absolute', top: HDR_H, left: 0, right: 0, bottom: 0, display: 'flex', pointerEvents: 'none' }}>
+          {/* Genel progress (weeks altı sabit bant) */}
+          <GeneralProgress />
+
+          {/* Grid columns (progress alanının ALTINDAN başlat) */}
+          <div style={{ position: 'absolute', top: HDR_H + OVERALL_H, left: 0, right: 0, bottom: 0, display: 'flex', pointerEvents: 'none' }}>
             {Array.from({ length: weekLabels.length }).map((_, i) => (<div key={i} style={{ width: colW, borderRight: '1px solid #f3f4f6' }} />))}
           </div>
 
           {/* Arrows UNDER bars */}
           <Arrows />
 
-          {/* Bars */}
-          <div style={{ position: 'absolute', top: HDR_H, left: 0, right: 0 }}>
+          {/* Bars (progress bandından SONRA başlat) */}
+          <div style={{ position: 'absolute', top: HDR_H + OVERALL_H, left: 0, right: 0 }}>
             {positioned.map((m, rowIdx) => {
               const barW = Math.max(1, Number(m.duration) || 1) * colW;
               const leftPx = ((m.start + clampShift) * colW) + colW; // gutter
               const titleFont = Math.max(10, Math.min(16, Math.floor(barW / 12)));
               const selected = swapId === m.id;
               const tColor = textColorFor(m.color);
-              const resText = formatRes(m);
-              const tip = `${m.name}\n${m.desc ? m.desc + '\n' : ''}${resText ? resText + ' • ' : ''}${m.duration} weeks${m.obMode==='onb' ? ' • OnB' : (m.obMode==='half' ? ' • Half' : '')}`;
-              const labelText = (resText || ' ') + (m.obMode==='onb' ? '  OnB' : '');
+              const mv = m.versions[version];
+              const resText = fmtResCount(mv);
+              const tip = `${m.name}\n${m.desc ? m.desc + '\n' : ''}${resText ? resText + ' • ' : ''}${m.duration} weeks${mv.obMode==='onb' ? ' • OnB' : (mv.obMode==='half' ? ' • Half' : '')}`;
+
+              const pct = clamp(asNum(mv.progress,0), 0, 100);
+
+              // sadece başlık tıklandığında docsUrl açılsın
+              function onTitleClick(e){
+                e.stopPropagation();
+                const url = (m.docsUrl || "").trim();
+                if (url){ window.open(url, "_blank", "noopener,noreferrer"); }
+              }
+              function onTitleKey(e){
+                if (e.key==='Enter' || e.key===' '){
+                  e.preventDefault();
+                  const url = (m.docsUrl || "").trim();
+                  if (url){ window.open(url, "_blank", "noopener,noreferrer"); }
+                }
+              }
+
               return (
                 <div key={m.id}
                      onMouseDown={(e)=>{ if(!editable) return; draggingRef.current = { id: m.id, startX: e.clientX }; setIsGrabbing(true); }}
@@ -792,12 +924,10 @@ function TimelineView({
                        userSelect: 'none'
                      }}
                      title={tip}>
-                  {/* MVP star (sol üst, siyah) */}
-                  {m.isMvp && (
-                    <div style={{position:'absolute', left:6, top:6, fontSize:14, color:'#000'}}>★</div>
-                  )}
+                  {/* MVP star (sol üst) */}
+                  {m.isMvp && (<div style={{position:'absolute', left:6, top:6, fontSize:14, color:'#000'}}>★</div>)}
                   {/* OnB badge (sağ üst) */}
-                  {m.obMode==='onb' && (
+                  {mv.obMode==='onb' && (
                     <div style={{
                       position:'absolute', right:6, top:6,
                       fontSize:11, fontWeight:800,
@@ -805,8 +935,55 @@ function TimelineView({
                       background:'rgba(0,0,0,0.36)', color:'#fff'
                     }}>OnB</div>
                   )}
-                  <div style={{ fontWeight: 800, fontSize: titleFont, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', wordBreak: 'break-word', padding: '0 6px', maxHeight: '2.2em' }}>{m.name}</div>
-                  <div style={{ marginTop: 4, fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', padding: '2px 6px', borderRadius: 6, backgroundColor: 'rgba(0,0,0,0.36)', color: '#fff', alignSelf: 'center' }}>{labelText}</div>
+
+                  {/* Title (sadece bu tıklanır) */}
+                  <div
+                    onClick={onTitleClick}
+                    onKeyDown={onTitleKey}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={m.docsUrl ? `Open docs for ${m.name}` : m.name}
+                    style={{
+                      fontWeight: 800,
+                      fontSize: titleFont,
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden', wordBreak: 'break-word',
+                      padding: '0 6px', maxHeight: '2.2em',
+                      textDecoration: (m.docsUrl||"").trim() ? 'underline dotted' : 'none',
+                      cursor: (m.docsUrl||"").trim() ? 'pointer':'inherit'
+                    }}
+                  >
+                    {m.name}
+                  </div>
+
+                  {/* Resource label */}
+                  <div style={{ marginTop: 4, fontSize: 12, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', padding: '2px 6px', borderRadius: 6, backgroundColor: 'rgba(0,0,0,0.36)', color: '#fff', alignSelf: 'center' }}>
+                    { (resText || ' ') + (mv.obMode==='onb' ? '  OnB' : (mv.obMode==='half' ? '  Half' : '')) }
+                  </div>
+
+                  {/* İç progress bar */}
+                  <div
+                    title={`${pct}%`}
+                    style={{
+                      position:'absolute',
+                      left:8,
+                      right:8,
+                      bottom:8,
+                      height: 8,
+                      borderRadius: 999,
+                      background: transparentize(m.color, 0.28),
+                      overflow:'hidden'
+                    }}
+                  >
+                    <div
+                      style={{
+                        width:`${pct}%`,
+                        height:'100%',
+                        background: darkenHex(m.color, 0.45)
+                      }}
+                    />
+                  </div>
                 </div>
               );
             })}
@@ -820,18 +997,23 @@ function TimelineView({
 
 /* ======================= MODULES ======================= */
 function ModulesEditor({
-  ordered, swapId, onSwapClick,
-  onChangeText, onChangeNumber, onResChange,
+  version, ordered, swapId, onSwapClick,
+  onChangeRoot, onChangeVersion, onResChange,
   onToggleEnabled, onToggleIsMvp,
   onAdd, onDelete, adding, allEnabled, onToggleAll,
   editable
 }){
+  const vkey = version;
   return (
     <div style={{ border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden' }}>
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding: '10px 12px', borderBottom:'1px solid #e5e7eb', background:'#fafafa' }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding: '10px 12px', borderBottom:'1px solid #e5e7eb', background:'#fafafa', gap:12, flexWrap:'wrap' }}>
         <div style={{display:'flex', alignItems:'center', gap:8}}>
           <input type="checkbox" checked={allEnabled} onChange={editable ? onToggleAll : ()=>{}} disabled={!editable} />
           <strong style={{ fontSize: 14 }}>All</strong>
+        </div>
+        <div style={{display:'flex', alignItems:'center', gap:8}}>
+          <span style={{fontSize:12, color:'#6b7280'}}>Editing version:</span>
+          <VersionSelector value={version} onChange={()=>{}} />
         </div>
         <button
           type="button"
@@ -844,72 +1026,160 @@ function ModulesEditor({
           {adding ? 'Adding…' : '+ Add Module'}
         </button>
       </div>
+
       <table style={{ width: '100%', borderCollapse: 'collapse' }}>
         <thead>
           <tr style={{ background: '#fafafa' }}>
-            {['Enabled','is MVP','Module Name','Description','Base Duration\n(Weeks)','FE','BE','QA','Color','Depends On','Computed Duration (Weeks)','Swap',''].map(h => (
+            {[
+              'Enabled','is MVP','Module Name','Description',
+              'Docs URL','Color','Depends On',
+              `Base Duration (${vkey.toUpperCase()})`,
+              `FE (${vkey.toUpperCase()})`,`BE (${vkey.toUpperCase()})`,`QA (${vkey.toUpperCase()})`,`PM (${vkey.toUpperCase()})`,
+              `obMode (${vkey.toUpperCase()})`,
+              `Computed Override (${vkey.toUpperCase()})`,
+              `Progress % (${vkey.toUpperCase()})`,
+              'Swap',''
+            ].map(h => (
               <th key={h} style={{ textAlign: 'left', fontSize: 12, padding: 10, whiteSpace: 'pre-wrap', borderBottom: '1px solid #e5e7eb' }}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {ordered.map(m => (
-            <tr key={m.id} style={{ background: swapId===m.id? '#eef2ff' : '#fff' }}>
-              <td style={td()}>
-                <input type="checkbox"
-                  checked={!!m.enabled}
-                  onChange={()=>editable && onToggleEnabled(m.id)}
-                  disabled={!editable}
-                  title={m.isMvp ? "MVP modules are always enabled" : ""}
-                />
-              </td>
-              <td style={td()}>
-                <input type="checkbox"
-                  checked={!!m.isMvp}
-                  onChange={()=>editable && onToggleIsMvp(m.id)}
-                  disabled={!editable}
-                />
-              </td>
-              <td style={td()}>
-                <input value={m.name} onChange={e=>editable && onChangeText(m.id,{name: e.target.value})} disabled={!editable} style={inp(200)} />
-              </td>
-              <td style={td()}>
-                <textarea value={m.desc || ''} onChange={e=>editable && onChangeText(m.id,{ desc: e.target.value })} disabled={!editable} style={{ ...inp(320), height: 56, resize: 'vertical' }} />
-              </td>
-              <td style={td()}>
-                <input type="number" min={1} value={m.baseDuration} onChange={e=>editable && onChangeNumber(m.id,'baseDuration', Math.max(1, Number(e.target.value)||1))} disabled={!editable} style={inp(56)} />
-              </td>
-              <td style={td()}>
-                <input type="number" min={0} value={m.fe} onChange={(e)=>editable && onResChange(m.id,'fe', e.target.value)} disabled={!editable} style={inp(44)} />
-              </td>
-              <td style={td()}>
-                <input type="number" min={0} value={m.be} onChange={(e)=>editable && onResChange(m.id,'be', e.target.value)} disabled={!editable} style={inp(44)} />
-              </td>
-              <td style={td()}>
-                <input type="number" min={0} value={m.qa} onChange={(e)=>editable && onResChange(m.id,'qa', e.target.value)} disabled={!editable} style={inp(44)} />
-              </td>
-              <td style={td()}>
-                <input type="color" value={m.color} onChange={(e)=>editable && onChangeText(m.id,{ color: e.target.value })} disabled={!editable} style={{ width: 40, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: editable ? 'pointer':'default' }} />
-              </td>
-              <td style={td()}>
-                <DepDropdown
-                  value={(m.deps||[]).map(Number)}
-                  options={ordered.filter(x=>x.id!==m.id).map(opt => ({ value: Number(opt.id), label: opt.name }))}
-                  onChange={(values)=> editable && onChangeText(m.id, { deps: values })}
-                  disabled={!editable}
-                />
-              </td>
-              <td style={td()}><strong>{computeDuration(m)}</strong>{m.obMode==='onb' ? '  (OnB)' : (m.obMode==='half' ? '  (Half)' : '')}</td>
-              <td style={td()}>
-                <button type="button" onClick={()=>editable && onSwapClick(m.id)} disabled={!editable} style={{ padding:'6px 8px', border:'1px solid #e5e7eb', borderRadius:6, background: swapId===m.id? '#eef2ff':'#fff', cursor: editable ? 'pointer':'default', opacity: editable ? 1 : 0.6 }}>Pick</button>
-              </td>
-              <td style={{ ...td(), width: 60 }}>
-                <button type="button" title="Delete" onClick={()=>editable && onDelete?.(m.id)}
-                        disabled={!editable}
-                        style={{ width: 36, height: 28, borderRadius: 6, border: '1px solid #fee2e2', background: '#fef2f2', color:'#dc2626', fontWeight: 800, cursor: editable ? 'pointer':'default', opacity: editable ? 1 : 0.6 }}>🗑</button>
-              </td>
-            </tr>
-          ))}
+          {ordered.map(m => {
+            const mv = m.versions[vkey] || {};
+            const autoDur = autoDuration(mv);
+            return (
+              <tr key={m.id} style={{ background: swapId===m.id? '#eef2ff' : '#fff' }}>
+                <td style={td()}>
+                  <input type="checkbox"
+                    checked={!!m.enabled}
+                    onChange={()=>editable && onToggleEnabled(m.id)}
+                    disabled={!editable}
+                    title={m.isMvp ? "MVP modules are always enabled" : ""}
+                  />
+                </td>
+                <td style={td()}>
+                  <input type="checkbox"
+                    checked={!!m.isMvp}
+                    onChange={()=>editable && onToggleIsMvp(m.id)}
+                    disabled={!editable}
+                  />
+                </td>
+                <td style={td()}>
+                  <input value={m.name} onChange={e=>editable && onChangeRoot(m.id,{name: e.target.value})} disabled={!editable} style={inp(180)} />
+                </td>
+                <td style={td()}>
+                  <textarea value={m.desc || ''} onChange={e=>editable && onChangeRoot(m.id,{ desc: e.target.value })} disabled={!editable} style={{ ...inp(220), height: 56, resize: 'vertical' }} />
+                </td>
+                {/* Docs URL */}
+                <td style={td()}>
+                  <input
+                    type="url"
+                    placeholder="https://docs.google.com/…"
+                    value={m.docsUrl || ""}
+                    onChange={(e)=> editable && onChangeRoot(m.id, { docsUrl: e.target.value })}
+                    disabled={!editable}
+                    style={inp(180)}
+                  />
+                </td>
+                {/* Color */}
+                <td style={td()}>
+                  <input type="color" value={m.color} onChange={(e)=>editable && onChangeRoot(m.id,{ color: e.target.value })} disabled={!editable} style={{ width: 40, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: editable ? 'pointer':'default' }} />
+                </td>
+                {/* Deps */}
+                <td style={td()}>
+                  <DepDropdown
+                    value={(m.deps||[]).map(Number)}
+                    options={ordered.filter(x=>x.id!==m.id).map(opt => ({ value: Number(opt.id), label: opt.name }))}
+                    onChange={(values)=> editable && onChangeRoot(m.id, { deps: values })}
+                    disabled={!editable}
+                  />
+                </td>
+                {/* baseDuration */}
+                <td style={td()}>
+                  <div style={{display:'flex', alignItems:'center', gap:8}}>
+                    <input type="number" min={1} value={mv.baseDuration ?? 1} onChange={e=>editable && onChangeVersion(m.id, vkey, { baseDuration: Math.max(1, Number(e.target.value)||1)})} disabled={!editable} style={inp(64)} />
+                    <small style={{color:'#6b7280'}}>auto: {autoDur}</small>
+                  </div>
+                </td>
+                {/* FE/BE/QA/PM */}
+                <td style={td()}>
+                  <input type="number" min={0} value={mv.fe ?? 0} onChange={(e)=>editable && onResChange(m.id, vkey,'fe', e.target.value)} disabled={!editable} style={inp(44)} />
+                </td>
+                <td style={td()}>
+                  <input type="number" min={0} value={mv.be ?? 0} onChange={(e)=>editable && onResChange(m.id, vkey,'be', e.target.value)} disabled={!editable} style={inp(44)} />
+                </td>
+                <td style={td()}>
+                  <input type="number" min={0} value={mv.qa ?? 0} onChange={(e)=>editable && onResChange(m.id, vkey,'qa', e.target.value)} disabled={!editable} style={inp(44)} />
+                </td>
+                <td style={td()}>
+                  <input type="number" min={0} value={mv.pm ?? 0} onChange={(e)=>editable && onResChange(m.id, vkey,'pm', e.target.value)} disabled={!editable} style={inp(44)} />
+                </td>
+                {/* obMode */}
+                <td style={td()}>
+                  <select
+                    value={mv.obMode || 'none'}
+                    onChange={(e)=> editable && onChangeVersion(m.id, vkey, { obMode: e.target.value })}
+                    disabled={!editable}
+                    style={{ ...inp(100), height: 32 }}>
+                    <option value="none">none</option>
+                    <option value="half">half</option>
+                    <option value="onb">onb</option>
+                  </select>
+                </td>
+                {/* Computed Override (0 => auto kullan) */}
+                <td style={td()}>
+                  <div style={{display:'flex', alignItems:'center', gap:8}}>
+                    <input
+                      type="number"
+                      min={0}
+                      value={mv.computedOverride ?? 0}
+                      onChange={(e)=> editable && onChangeVersion(m.id, vkey, { computedOverride: Math.max(0, Number(e.target.value)||0) })}
+                      disabled={!editable}
+                      style={inp(64)}
+                      title="0 = auto kullanılır; >0 ise override edilir"
+                    />
+                    <small style={{color:'#6b7280'}}>auto: {autoDur}</small>
+                  </div>
+                </td>
+                {/* Progress % */}
+                <td style={td()}>
+                  <div title={`${mv.progress ?? 0}%`} style={{display:'flex', alignItems:'center', gap:8, width:160}}>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={mv.progress ?? 0}
+                      onChange={(e)=> editable && onChangeVersion(m.id, vkey, { progress: clamp(Number(e.target.value)||0,0,100) })}
+                      disabled={!editable}
+                      style={{ flex:1 }}
+                    />
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={mv.progress ?? 0}
+                      onChange={(e)=> editable && onChangeVersion(m.id, vkey, { progress: clamp(Number(e.target.value)||0,0,100) })}
+                      disabled={!editable}
+                      style={inp(56)}
+                    />
+                  </div>
+                </td>
+
+                {/* Swap */}
+                <td style={td()}>
+                  <button type="button" onClick={()=>editable && onSwapClick(m.id)} disabled={!editable} style={{ padding:'6px 8px', border:'1px solid #e5e7eb', borderRadius:6, background: swapId===m.id? '#eef2ff':'#fff', cursor: editable ? 'pointer':'default', opacity: editable ? 1 : 0.6 }}>Pick</button>
+                </td>
+                {/* Delete */}
+                <td style={{ ...td(), width: 60 }}>
+                  <button type="button" title="Delete" onClick={()=>editable && onDelete?.(m.id)}
+                          disabled={!editable}
+                          style={{ width: 36, height: 28, borderRadius: 6, border: '1px solid #fee2e2', background: '#fef2f2', color:'#dc2626', fontWeight: 800, cursor: editable ? 'pointer':'default', opacity: editable ? 1 : 0.6 }}>🗑</button>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -974,7 +1244,7 @@ function DepDropdown({ value = [], options = [], onChange, disabled }){
   }
 
   return (
-    <div ref={ref} style={{ position:'relative', width: 180, opacity: disabled ? 0.6 : 1 }}>
+    <div ref={ref} style={{ position:'relative', width: 140, opacity: disabled ? 0.6 : 1 }}>
       <button type="button" onClick={(e)=>{ if(disabled) return; e.stopPropagation(); setOpen(o=>!o); }}
         disabled={disabled}
         style={{ width:'100%', padding:'6px 8px', border:'1px solid #e5e7eb', borderRadius:8, background:'#fff', textAlign:'left', fontSize:13, cursor: disabled ? 'default' : 'pointer' }}>
@@ -1009,6 +1279,7 @@ function Tab({ active, onClick, children }){
     <button type="button" onClick={onClick} style={{ padding: '8px 12px', borderRadius: 8, border: '1px solid #e5e7eb', background: active ? '#111827' : '#fff', color: active ? '#fff' : '#111827', fontWeight: 700, cursor: 'pointer' }}>{children}</button>
   );
 }
+const orhan = 1
 function td(){ return { padding: 10, borderBottom: '1px solid #f3f4f6', fontSize: 13, verticalAlign: 'top' }; }
 function inp(w=160){ return { width: w, padding: '6px 8px', border: '1px solid #e5e7eb', borderRadius: 8, fontSize: 13 }; }
 function iconBtn(){ return { width: 32, height: 28, borderRadius: 8, border: '1px solid #e5e7eb', background:'#fff', cursor:'pointer', fontWeight:900 }; }
